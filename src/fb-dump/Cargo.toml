@@ -1,0 +1,19 @@
+[package]
+name = "fb-dump"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Render the shared framebuffer to a PNG for headless visual testing of the compositor output."
+
+[[bin]]
+name = "fb-dump"
+path = "src/main.rs"
+
+[lib]
+name = "fb_dump"
+path = "src/lib.rs"
+
+[dependencies]
+bridge-protocol = { path = "../bridge-protocol" }
+memmap2 = "0.9"
+png = "0.17"

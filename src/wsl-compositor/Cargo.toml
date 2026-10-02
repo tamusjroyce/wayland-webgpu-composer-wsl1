@@ -1,0 +1,24 @@
+[package]
+name = "wsl-compositor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "WSL1 Wayland compositor that software-composites clients into a shared framebuffer consumed by the Windows WebGPU host."
+
+# NOTE: This crate is intentionally NOT part of the root workspace. It depends on `smithay`
+# and only builds on Linux (inside WSL1). Build it from this directory with `cargo build`.
+
+[[bin]]
+name = "wsl-compositor"
+path = "src/main.rs"
+
+[dependencies]
+bridge-protocol = { path = "../bridge-protocol" }
+memmap2 = "0.9"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+[dependencies.smithay]
+path = "../../smithay"
+default-features = false
+features = ["wayland_frontend", "desktop"]

@@ -1,0 +1,27 @@
+[package]
+name = "win-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native Windows host that owns the WebGPU device and presents the composited framebuffer in a single scalable window."
+
+[[bin]]
+name = "win-host"
+path = "src/main.rs"
+
+[lib]
+name = "win_host"
+path = "src/lib.rs"
+
+[dependencies]
+bridge-protocol = { path = "../bridge-protocol" }
+winit = "0.29"
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+memmap2 = "0.9"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"

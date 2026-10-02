@@ -1,0 +1,25 @@
+# Virtual workspace for the Windows-buildable crates.
+#
+# `src/wsl-compositor` is intentionally NOT a member: it depends on `smithay` and only
+# builds on Linux (inside WSL1). It is a standalone crate with its own lockfile usage and
+# is excluded here so that `cargo build` on Windows does not try to compile smithay.
+[workspace]
+resolver = "2"
+members = [
+    "src/bridge-protocol",
+    "src/win-host",
+    "src/fb-dump",
+]
+exclude = [
+    "src/wsl-compositor",
+    "smithay",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

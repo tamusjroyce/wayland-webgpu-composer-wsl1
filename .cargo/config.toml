@@ -1,0 +1,10 @@
+# Convenience aliases for this workspace.
+#
+# `cargo coverage` measures line/region coverage over the Windows-buildable crates
+# (bridge-protocol, win-host). The GPU device setup (gpu.rs), the background TCP/thread glue
+# (bridge.rs) and the binary entry point (main.rs) require a real GPU, display and live
+# sockets, so they are excluded from the coverage denominator. The wsl-compositor crate is
+# Linux-only and is not part of this workspace; build and test it inside WSL1.
+[alias]
+coverage = ["llvm-cov", "--workspace", "--ignore-filename-regex", "(gpu\\.rs|bridge\\.rs|main\\.rs)", "--summary-only"]
+coverage-html = ["llvm-cov", "--workspace", "--ignore-filename-regex", "(gpu\\.rs|bridge\\.rs|main\\.rs)", "--html"]
