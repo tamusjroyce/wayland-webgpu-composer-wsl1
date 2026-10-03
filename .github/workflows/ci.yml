@@ -22,13 +22,10 @@ jobs:
   linux-compositor:
     name: Linux (WSL1 compositor build)
     runs-on: ubuntu-22.04
-    # The compositor depends on a patched Smithay fork that is NOT vendored in this repo.
-    # Set the repo variable `SMITHAY_REPO` (and optionally `SMITHAY_REF`) to enable this job.
-    if: ${{ vars.SMITHAY_REPO != '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch Smithay fork
-        run: git clone --depth 1 --branch "${{ vars.SMITHAY_REF || 'main' }}" "${{ vars.SMITHAY_REPO }}" smithay
+      - name: Clone Smithay (configure)
+        run: sh ./configure.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

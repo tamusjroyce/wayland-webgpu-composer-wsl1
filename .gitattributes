@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings so they run on Linux / WSL1 / CI runners.
+*.sh text eol=lf
+# WGSL and Rust sources are plain text with LF.
+*.wgsl text eol=lf
+*.rs text eol=lf
