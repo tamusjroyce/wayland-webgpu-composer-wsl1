@@ -1,0 +1,37 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Audit every committed lockfile (advisory lookups need only the lock).
+      - run: cargo audit
+      - run: cargo audit --file src/wwc-setup/Cargo.lock
+      - run: cargo audit --file src/wsl-compositor/Cargo.lock
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+      # wwc-setup is a separate crate (GUI stack); check it too.
+      - run: cargo deny --manifest-path src/wwc-setup/Cargo.toml check

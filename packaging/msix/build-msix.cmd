@@ -38,7 +38,11 @@ copy /y "%HERE%Assets\*.png" "%STAGE%\Assets\" >nul
 copy /y "%BIN%\wwc-setup.exe" "%STAGE%\" >nul || (echo ERROR: wwc-setup.exe not found in "%BIN%".& exit /b 1)
 copy /y "%BIN%\win-host.exe"  "%STAGE%\" >nul || (echo ERROR: win-host.exe not found in "%BIN%".& exit /b 1)
 copy /y "%BIN%\fb-dump.exe"   "%STAGE%\" >nul || (echo ERROR: fb-dump.exe not found in "%BIN%".& exit /b 1)
-copy /y "%HERE%..\..\run.cmd" "%STAGE%\" >nul
+REM Bundle the launcher/installer scripts as installed files of the package.
+copy /y "%HERE%..\..\run.cmd"     "%STAGE%\" >nul
+copy /y "%HERE%..\..\run.sh"      "%STAGE%\" >nul
+copy /y "%HERE%..\..\install.cmd" "%STAGE%\" >nul
+copy /y "%HERE%..\..\install.sh"  "%STAGE%\" >nul
 
 echo Packing MSIX...
 "%MAKEAPPX%" pack /o /d "%STAGE%" /p "%OUT%" || exit /b 1
