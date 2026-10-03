@@ -28,11 +28,13 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\win-host.exe dist\
           Copy-Item target\release\fb-dump.exe dist\
-          Copy-Item README.md, LICENSE dist\
+          Copy-Item install.cmd, README.md, LICENSE dist\
           Compress-Archive -Path dist\* -DestinationPath wayland-webgpu-composer-windows-x64.zip -Force
       - uses: softprops/action-gh-release@v2
         with:
-          files: wayland-webgpu-composer-windows-x64.zip
+          files: |
+            wayland-webgpu-composer-windows-x64.zip
+            install.cmd
 
   linux:
     name: WSL1 compositor (wsl-compositor)
@@ -57,9 +59,12 @@ jobs:
         run: |
           mkdir -p dist
           cp src/wsl-compositor/target/release/wsl-compositor dist/
+          cp install.sh dist/
           cp scripts/wsl1-install.sh dist/ 2>/dev/null || true
           cp README.md LICENSE dist/
           tar -C dist -czf wayland-webgpu-composer-wsl1-x64.tar.gz .
       - uses: softprops/action-gh-release@v2
         with:
-          files: wayland-webgpu-composer-wsl1-x64.tar.gz
+          files: |
+            wayland-webgpu-composer-wsl1-x64.tar.gz
+            install.sh

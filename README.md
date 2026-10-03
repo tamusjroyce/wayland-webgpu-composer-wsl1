@@ -79,13 +79,34 @@ automatically by GitHub Actions when a `vX.Y.Z` tag is pushed):
 
 | Asset | Contents | For |
 |-------|----------|-----|
-| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe` | Windows |
-| `wayland-webgpu-composer-wsl1-x64.tar.gz` | `wsl-compositor` (+ `wsl1-install.sh`) | WSL1 (Ubuntu 22.04) |
+| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd` | Windows |
+| `wayland-webgpu-composer-wsl1-x64.tar.gz` | `wsl-compositor`, `install.sh` (+ `wsl1-install.sh`) | WSL1 (Ubuntu 22.04) |
 
-**Windows** — download `…-windows-x64.zip`, extract it anywhere, and run `win-host.exe`
-(and `fb-dump.exe`) from that folder. No installation step is required.
+The quickest path is the **one-line installers**, which auto-discover the latest release,
+download it, and install/run it. The same `install.cmd` / `install.sh` also ship inside the
+archives above.
 
-**WSL1** — download `…-wsl1-x64.tar.gz` and, inside your WSL1 distro:
+**Windows** — in a Command Prompt, download and run `install.cmd`. It fetches the latest
+`…-windows-x64.zip`, extracts it to `%LOCALAPPDATA%\wayland-webgpu-composer`, and launches
+`win-host.exe` (any extra args pass straight through, e.g. `--host 127.0.0.1:7777`):
+
+```bat
+curl -fL -o install.cmd https://github.com/tamusjroyce/wayland-webgpu-composer-wsl1/releases/latest/download/install.cmd
+install.cmd
+```
+
+> Prefer to do it by hand? Download `…-windows-x64.zip`, extract it anywhere, and run
+> `win-host.exe` (and `fb-dump.exe`) from that folder — no installation step required.
+
+**WSL1** — inside your WSL1 distro, pipe `install.sh` to `bash`. It fetches the latest
+`…-wsl1-x64.tar.gz`, installs `wsl-compositor` to `/usr/local/bin`, and pulls the
+`libxkbcommon0` runtime dependency:
+
+```bash
+curl -fsSL https://github.com/tamusjroyce/wayland-webgpu-composer-wsl1/releases/latest/download/install.sh | bash
+```
+
+> Prefer to do it by hand? Download `…-wsl1-x64.tar.gz` and, inside your WSL1 distro:
 
 ```bash
 tar -xzf wayland-webgpu-composer-wsl1-x64.tar.gz
