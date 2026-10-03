@@ -1,0 +1,48 @@
+name: Auto release on main
+
+# On every push to main, bump the patch version from the latest v* tag and cut a release
+# (which builds + signs the .zip, .tar.gz and .msix via the reusable release workflow).
+#
+# Add "[skip release]" to a commit message to push without releasing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Compute next version
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need all tags to find the latest
+      - id: bump
+        run: |
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          else
+            ver=${latest#v}
+            major=${ver%%.*}
+            rest=${ver#*.}
+            minor=${rest%%.*}
+            patch=${rest#*.}
+            patch=$((patch + 1))
+            next="v${major}.${minor}.${patch}"
+          fi
+          echo "Latest tag: ${latest:-<none>} -> next: $next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build & publish release
+    needs: version
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit

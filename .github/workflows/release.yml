@@ -1,16 +1,24 @@
 name: Release
 
-# Build downloadable binaries and attach them to a GitHub Release when a version tag is
-# pushed, e.g.:  git tag v0.1.0 && git push origin v0.1.0
+# Build downloadable binaries and attach them to a GitHub Release. Runs when a version tag
+# is pushed (git tag v0.1.0 && git push origin v0.1.0) or when called by auto-release.yml.
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag/release name to create (e.g. v0.1.3).
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # The release tag: the pushed tag, or the one passed by auto-release.yml.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   windows:
@@ -32,6 +40,7 @@ jobs:
           Compress-Archive -Path dist\* -DestinationPath wayland-webgpu-composer-windows-x64.zip -Force
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             wayland-webgpu-composer-windows-x64.zip
             install.cmd
@@ -67,6 +76,7 @@ jobs:
           tar -C dist -czf wayland-webgpu-composer-wsl1-x64.tar.gz .
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             wayland-webgpu-composer-wsl1-x64.tar.gz
             install.sh
@@ -92,6 +102,15 @@ jobs:
           copy /y target\release\win-host.exe packaging\msix\bin\
           copy /y target\release\fb-dump.exe packaging\msix\bin\
           copy /y src\wwc-setup\target\release\wwc-setup.exe packaging\msix\bin\
+      - name: Stamp package version
+        shell: pwsh
+        run: |
+          $v = "${{ env.RELEASE_TAG }}".TrimStart('v')
+          if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { $v = '0.0.0' }
+          $ver = "$v.0"
+          $path = 'packaging/msix/AppxManifest.xml'
+          (Get-Content $path -Raw) -replace 'Version="[0-9.]+"', "Version=""$ver""" | Set-Content -NoNewline $path
+          Write-Host "AppxManifest version -> $ver"
       - name: Prepare signing certificate
         shell: pwsh
         run: |
@@ -125,6 +144,7 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           fail_on_unmatched_files: false
           files: |
             wayland-webgpu-composer-windows-x64.msix

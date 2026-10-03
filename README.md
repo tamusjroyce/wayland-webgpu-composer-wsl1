@@ -216,13 +216,18 @@ Linux-only — build/test it inside WSL1.
 
 - **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) — on every push/PR, builds
   and tests the Windows workspace and builds the WSL1 compositor on Ubuntu 22.04.
-- **Release** ([`.github/workflows/release.yml`](.github/workflows/release.yml)) — on a
-  pushed `vX.Y.Z` tag, builds release binaries for Windows and WSL1 and attaches the
-  archives (`.zip`, `.tar.gz`, and the `.msix`) to a GitHub Release. To cut a release:
+- **Release** ([`.github/workflows/release.yml`](.github/workflows/release.yml)) — a reusable
+  workflow that builds release binaries for Windows and WSL1 and attaches the archives
+  (`.zip`, `.tar.gz`, and the signed `.msix` + `.cer`) to a GitHub Release. It runs on a
+  pushed `vX.Y.Z` tag, or when called by auto-release.
+- **Auto-release** ([`.github/workflows/auto-release.yml`](.github/workflows/auto-release.yml))
+  — every push to `main` bumps the patch version from the latest `v*` tag and cuts a release
+  automatically. Add `[skip release]` to a commit message to push without releasing. To
+  release manually instead, push a tag:
 
   ```bash
-  git tag v0.1.0
-  git push origin v0.1.0
+  git tag v0.1.3
+  git push origin v0.1.3
   ```
 
 ### MSIX signing
