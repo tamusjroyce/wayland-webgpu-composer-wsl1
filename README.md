@@ -49,6 +49,7 @@ small native Windows host; the two halves talk over the shared framebuffer + con
 | `src/win-host` | Windows | `winit` + `wgpu` app: one scalable window, maps the shared framebuffer, presents it, forwards input over TCP. |
 | `src/bridge-protocol` | shared | Shared-memory framebuffer layout + the TCP control-channel wire protocol. Pure `std` Rust, builds on both OSes. |
 | `src/fb-dump` | any | Renders the shared framebuffer file to a PNG — headless "visual test". |
+| `src/wwc-setup` | Windows | Setup/launcher GUI (`eframe`) for the MSIX: detects a WSL1 Debian/Ubuntu distro, installs the compositor into it, and launches the host. Excluded from the workspace. |
 | `smithay/` | — | Vendored Smithay (path dependency). |
 
 `win-host`, `bridge-protocol`, and `fb-dump` form the root Cargo workspace (Windows-buildable).
@@ -79,29 +80,38 @@ automatically by GitHub Actions when a `vX.Y.Z` tag is pushed):
 
 | Asset | Contents | For |
 |-------|----------|-----|
-| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd` | Windows |
+| `wayland-webgpu-composer-windows-x64.msix` | MSIX installer (Start Menu entry + setup wizard) | Windows |
+| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd`, `run.cmd`, `run.sh` | Windows |
 | `wayland-webgpu-composer-wsl1-x64.tar.gz` | `wsl-compositor`, `install.sh` (+ `wsl1-install.sh`) | WSL1 (Ubuntu 22.04) |
 
-The quickest path is the **one-line installers**, which auto-discover the latest release,
-download it, and install/run it. The same `install.cmd` / `install.sh` also ship inside the
-archives above.
+There are three ways to install on Windows: the **MSIX** (Start Menu app), the **one-line
+`install.cmd`** (portable, no install), or **manual** extraction.
 
-**Windows (recommended)** — in a Command Prompt, download and run `install.cmd`. This is an
-all-in-one installer/updater/launcher that sets up **both** halves:
+**Windows — MSIX (Start Menu app).** Install `…-windows-x64.msix`; it adds a
+**"Wayland WebGPU Composer"** Start Menu shortcut. Launching it opens a setup wizard that
+lists your WSL distros, enables only **WSL version 1** Debian/Ubuntu distros (others are
+grayed out), installs the compositor into the one you pick, and launches the WebGPU window.
+This alpha is **self-signed**, so trust the bundled `.cer` once before installing — see
+[MSIX signing](#msix-signing).
 
-1. Downloads/updates the Windows host (`win-host.exe`, `fb-dump.exe`) into
+**Windows — one-line installer (recommended for quick start).** In a Command Prompt, download
+and run `install.cmd`. It's an all-in-one installer/updater that sets up **both** halves and
+then hands off to `run.cmd` to launch them:
+
+1. Downloads/updates the Windows host (`win-host.exe`, `fb-dump.exe`, `run.cmd`) into
    `%LOCALAPPDATA%\wayland-webgpu-composer`.
 2. Ensures a WSL1 distro named `WWC-WSL1` exists (imports Ubuntu 22.04 as WSL1 on first run).
 3. Installs/updates the Linux `wsl-compositor` and a demo desktop (Weston) inside it.
-4. Launches the compositor and the WebGPU window.
+4. `run.cmd` launches the compositor and the WebGPU window.
 
 ```bat
 curl -fL -o install.cmd https://github.com/tamusjroyce/wayland-webgpu-composer-wsl1/releases/latest/download/install.cmd
 install.cmd
 ```
 
-Re-run `install.cmd` any time to update to the latest release and relaunch. Pass a client
-command to change what runs inside the compositor, e.g. `install.cmd "gnome-calculator"`.
+Re-run `install.cmd` any time to update to the latest release and relaunch. To just relaunch
+without reinstalling, run `run.cmd` (or `run.sh` from Git Bash). Pass a client command to
+change what runs inside the compositor, e.g. `install.cmd "gnome-calculator"`.
 (First run downloads an Ubuntu rootfs, so it takes a few minutes; later runs are quick.)
 
 > Prefer to do it by hand? Download `…-windows-x64.zip`, extract it anywhere, and run
@@ -207,13 +217,45 @@ Linux-only — build/test it inside WSL1.
 - **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) — on every push/PR, builds
   and tests the Windows workspace and builds the WSL1 compositor on Ubuntu 22.04.
 - **Release** ([`.github/workflows/release.yml`](.github/workflows/release.yml)) — on a
-  pushed `vX.Y.Z` tag, builds release binaries for Windows and WSL1 and attaches the two
-  archives to a GitHub Release. To cut a release:
+  pushed `vX.Y.Z` tag, builds release binaries for Windows and WSL1 and attaches the
+  archives (`.zip`, `.tar.gz`, and the `.msix`) to a GitHub Release. To cut a release:
 
   ```bash
   git tag v0.1.0
   git push origin v0.1.0
   ```
+
+### MSIX signing
+
+The MSIX ([`packaging/msix/`](packaging/msix)) is built by the `msix` CI job with `makeappx`
+and bundles the setup wizard (`wwc-setup`) plus the host binaries. MSIX must be signed to
+install, and the certificate's subject must match the manifest's `Publisher`
+(`CN=wayland-webgpu-composer`).
+
+Because this is an **alpha**, CI signs the package with a **self-signed** code-signing
+certificate generated on the runner with Microsoft tooling (`New-SelfSignedCertificate` +
+`signtool`). Each release therefore includes:
+
+- `wayland-webgpu-composer-windows-x64.msix` — the signed package.
+- `wayland-webgpu-composer.cer` — the public certificate to trust.
+
+To install the alpha MSIX, first trust the certificate once (elevated), then install:
+
+```powershell
+Import-Certificate -FilePath wayland-webgpu-composer.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage wayland-webgpu-composer-windows-x64.msix
+```
+
+To sign with a **real** certificate instead (no trust step for users), add repository secrets
+`WWC_PFX_BASE64` (base64-encoded `.pfx`) and `WWC_PFX_PASSWORD`; CI uses them automatically.
+To build locally:
+
+```bat
+packaging\msix\build-msix.cmd packaging\msix\bin
+```
+
+(with `wwc-setup.exe`, `win-host.exe`, `fb-dump.exe` staged in `packaging\msix\bin`; set
+`WWC_PFX`/`WWC_PFX_PASS` to sign).
 
 ## Known limitations
 

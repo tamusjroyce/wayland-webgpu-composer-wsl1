@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for the "Wayland WebGPU Composer" packaged desktop app.
+
+  This is a full-trust (Desktop Bridge) package: it installs the Start Menu entry and the
+  wwc-setup wizard + host binaries. The wizard (wwc-setup.exe) is the entry point; on launch
+  it detects WSL1 Debian/Ubuntu distros, installs the compositor into the chosen one, and
+  launches the WebGPU host. MSIX cannot run an interactive installer UI, so that selection
+  happens in the app at first launch.
+
+  `Publisher` must match the signing certificate subject. The default below matches the
+  self-signed cert created by build-msix.cmd.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="WaylandWebGPUComposer"
+            Publisher="CN=wayland-webgpu-composer"
+            Version="0.1.3.0"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Wayland WebGPU Composer</DisplayName>
+    <PublisherDisplayName>wayland-webgpu-composer contributors</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Run Linux desktop apps inside Windows through a WebGPU window (WSL1).</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="WwcSetup" Executable="wwc-setup.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Wayland WebGPU Composer"
+        Description="Run Linux desktop apps inside Windows through a WebGPU window (WSL1)."
+        BackgroundColor="#21283D"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+</Package>

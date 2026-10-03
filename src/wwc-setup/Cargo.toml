@@ -1,0 +1,16 @@
+[package]
+name = "wwc-setup"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Setup/launcher wizard for wayland-webgpu-composer: detects a WSL1 Debian/Ubuntu distro, installs the compositor into it, and launches the WebGPU host."
+
+# Excluded from the root workspace: pulls a GUI stack (eframe) not needed by the
+# host binaries, so it keeps its own lockfile and is built only for the MSIX package.
+
+[[bin]]
+name = "wwc-setup"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }

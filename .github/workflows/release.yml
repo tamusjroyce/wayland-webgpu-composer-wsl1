@@ -28,13 +28,15 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\win-host.exe dist\
           Copy-Item target\release\fb-dump.exe dist\
-          Copy-Item install.cmd, README.md, LICENSE dist\
+          Copy-Item install.cmd, run.cmd, run.sh, README.md, LICENSE dist\
           Compress-Archive -Path dist\* -DestinationPath wayland-webgpu-composer-windows-x64.zip -Force
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             wayland-webgpu-composer-windows-x64.zip
             install.cmd
+            run.cmd
+            run.sh
 
   linux:
     name: WSL1 compositor (wsl-compositor)
@@ -68,3 +70,62 @@ jobs:
           files: |
             wayland-webgpu-composer-wsl1-x64.tar.gz
             install.sh
+
+  msix:
+    name: MSIX package (Windows)
+    runs-on: windows-latest
+    env:
+      WWC_PFX_BASE64: ${{ secrets.WWC_PFX_BASE64 }}
+      WWC_PFX_PASSWORD: ${{ secrets.WWC_PFX_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build host binaries
+        run: cargo build --release --locked -p win-host -p fb-dump
+      - name: Build setup wizard
+        run: cargo build --release --manifest-path src/wwc-setup/Cargo.toml
+      - name: Stage binaries
+        shell: cmd
+        run: |
+          mkdir packaging\msix\bin
+          copy /y target\release\win-host.exe packaging\msix\bin\
+          copy /y target\release\fb-dump.exe packaging\msix\bin\
+          copy /y src\wwc-setup\target\release\wwc-setup.exe packaging\msix\bin\
+      - name: Prepare signing certificate
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          $cer = Join-Path $env:GITHUB_WORKSPACE 'wayland-webgpu-composer.cer'
+          if ($env:WWC_PFX_BASE64) {
+            # Use the maintainer-provided certificate.
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WWC_PFX_BASE64))
+            $col = [System.Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+            $col.Import($pfx, $env:WWC_PFX_PASSWORD, 'DefaultKeySet')
+            [IO.File]::WriteAllBytes($cer, $col[0].Export('Cert'))
+            "WWC_PFX_PASS=$env:WWC_PFX_PASSWORD" | Out-File $env:GITHUB_ENV -Append
+          } else {
+            # Generate a self-signed alpha code-signing cert with Microsoft tooling. Its
+            # subject MUST match AppxManifest Publisher (CN=wayland-webgpu-composer).
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert `
+              -Subject 'CN=wayland-webgpu-composer' `
+              -CertStoreLocation 'Cert:\CurrentUser\My' `
+              -KeyExportPolicy Exportable -KeyUsage DigitalSignature `
+              -FriendlyName 'Wayland WebGPU Composer (alpha, self-signed)' `
+              -NotAfter (Get-Date).AddYears(5)
+            $pass = ConvertTo-SecureString -String 'wwc-alpha' -Force -AsPlainText
+            Export-PfxCertificate -Cert $cert -FilePath $pfx -Password $pass | Out-Null
+            Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+            "WWC_PFX_PASS=wwc-alpha" | Out-File $env:GITHUB_ENV -Append
+          }
+          "WWC_PFX=$pfx" | Out-File $env:GITHUB_ENV -Append
+      - name: Build & sign MSIX
+        shell: cmd
+        run: packaging\msix\build-msix.cmd packaging\msix\bin "%CD%\wayland-webgpu-composer-windows-x64.msix"
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            wayland-webgpu-composer-windows-x64.msix
+            wayland-webgpu-composer.cer

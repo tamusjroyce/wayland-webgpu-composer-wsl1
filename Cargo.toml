@@ -12,6 +12,7 @@ members = [
 ]
 exclude = [
     "src/wsl-compositor",
+    "src/wwc-setup",
     "smithay",
 ]
 

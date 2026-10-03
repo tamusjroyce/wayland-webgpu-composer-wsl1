@@ -5,3 +5,5 @@
 *.rs text eol=lf
 # Patches must keep LF so `git apply` works on Linux / CI runners.
 *.patch text eol=lf
+# Keep binary assets from being line-ending normalized.
+*.png binary
