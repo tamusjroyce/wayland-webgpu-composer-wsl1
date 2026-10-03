@@ -79,7 +79,7 @@ automatically by GitHub Actions when a `vX.Y.Z` tag is pushed):
 
 | Asset | Contents | For |
 |-------|----------|-----|
-| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd`, `install.ps1` | Windows |
+| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd` | Windows |
 | `wayland-webgpu-composer-wsl1-x64.tar.gz` | `wsl-compositor`, `install.sh` (+ `wsl1-install.sh`) | WSL1 (Ubuntu 22.04) |
 
 The quickest path is the **one-line installers**, which auto-discover the latest release,

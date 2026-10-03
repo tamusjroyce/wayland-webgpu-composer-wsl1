@@ -28,14 +28,13 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\win-host.exe dist\
           Copy-Item target\release\fb-dump.exe dist\
-          Copy-Item install.cmd, install.ps1, README.md, LICENSE dist\
+          Copy-Item install.cmd, README.md, LICENSE dist\
           Compress-Archive -Path dist\* -DestinationPath wayland-webgpu-composer-windows-x64.zip -Force
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             wayland-webgpu-composer-windows-x64.zip
             install.cmd
-            install.ps1
 
   linux:
     name: WSL1 compositor (wsl-compositor)
