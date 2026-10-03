@@ -109,7 +109,10 @@ jobs:
           if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { $v = '0.0.0' }
           $ver = "$v.0"
           $path = 'packaging/msix/AppxManifest.xml'
-          (Get-Content $path -Raw) -replace 'Version="[0-9.]+"', "Version=""$ver""" | Set-Content -NoNewline $path
+          # Case-sensitive + word boundary: only the Identity's standalone Version — not the
+          # xml declaration's lowercase version="1.0", nor TargetDeviceFamily's MinVersion.
+          (Get-Content $path -Raw) -creplace '\bVersion="[0-9.]+"', "Version=""$ver""" |
+            Set-Content -NoNewline -Encoding utf8 $path
           Write-Host "AppxManifest version -> $ver"
       - name: Prepare signing certificate
         shell: pwsh
