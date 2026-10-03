@@ -16,10 +16,11 @@ use crate::UserEvent;
 
 /// Spawn the control-channel client. Returns a sender for outgoing [`ClientMessage`]s.
 ///
-/// The client keeps retrying the connection until the compositor is reachable, and
-/// transparently reconnects if the link drops. Incoming [`ServerMessage`]s are wrapped in
-/// [`UserEvent`] and pushed to the event loop.
-pub fn spawn(addr: String, proxy: EventLoopProxy<UserEvent>) -> Sender<ClientMessage> {
+/// `candidates` is the ordered list of `ip:port` addresses to try; the client connects to
+/// the first that answers. It keeps retrying until the compositor is reachable, and
+/// transparently reconnects (re-scanning the list) if the link drops. Incoming
+/// [`ServerMessage`]s are wrapped in [`UserEvent`] and pushed to the event loop.
+pub fn spawn(candidates: Vec<String>, proxy: EventLoopProxy<UserEvent>) -> Sender<ClientMessage> {
     let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
 
     // The write half of the current connection, shared with the writer thread. `None` while
@@ -43,13 +44,7 @@ pub fn spawn(addr: String, proxy: EventLoopProxy<UserEvent>) -> Sender<ClientMes
 
     // Manager thread: (re)connects and reads server messages.
     thread::spawn(move || loop {
-        let stream = match TcpStream::connect(&addr) {
-            Ok(s) => s,
-            Err(_) => {
-                thread::sleep(Duration::from_millis(500));
-                continue;
-            }
-        };
+        let (stream, addr) = connect_any(&candidates);
         log::info!("connected to compositor at {addr}");
         let _ = stream.set_nodelay(true);
 
@@ -83,3 +78,17 @@ pub fn spawn(addr: String, proxy: EventLoopProxy<UserEvent>) -> Sender<ClientMes
 
     tx
 }
+
+/// Block until one of `candidates` accepts a connection, scanning the list in order and
+/// pausing briefly between full passes. Returns the live stream and the address it reached.
+fn connect_any(candidates: &[String]) -> (TcpStream, String) {
+    loop {
+        for addr in candidates {
+            if let Ok(s) = TcpStream::connect(addr) {
+                return (s, addr.clone());
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+

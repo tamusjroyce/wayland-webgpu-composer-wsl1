@@ -120,7 +120,7 @@ What is and is not possible, and why the chosen design follows:
 
 1. On **Windows**: `cargo run -p win-host -- --shm C:\Users\<you>\AppData\Local\Temp\wwc.fb`
 2. In **WSL1**: `cargo run` inside `src/wsl-compositor` with
-   `--shm /mnt/c/Users/<you>/AppData/Local/Temp/wwc.fb --host 127.0.0.1:7777`
+   `--shm /mnt/c/Users/<you>/AppData/Local/Temp/wwc.fb --host 127.0.0.1:8335`
 3. Point Wayland clients at the compositor: `WAYLAND_DISPLAY=wayland-1 weston-terminal`
 
 ## 6. Testing & coverage

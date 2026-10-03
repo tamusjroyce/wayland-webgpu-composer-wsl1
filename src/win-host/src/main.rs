@@ -44,7 +44,7 @@ fn main() {
     let mut gpu = GpuState::new(window.clone());
 
     let proxy = event_loop.create_proxy();
-    let tx = bridge::spawn(parsed.host, proxy);
+    let tx = bridge::spawn(args::candidate_addrs(&parsed.host), proxy);
 
     let mut shm: Option<Mmap> = None;
 

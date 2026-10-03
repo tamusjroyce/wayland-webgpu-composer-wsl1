@@ -1,26 +1,38 @@
 //! Command-line argument parsing for the Windows host.
 
+/// Transport used to reach the compositor. Only TCP exists today; the flag is here so other
+/// transports (e.g. shared-memory signalling) can be added without changing the CLI shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionType {
+    Tcp,
+}
+
 /// Parsed command-line options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args {
-    /// Address of the compositor control channel.
-    pub host: String,
-    /// Whether `-h`/`--help` was requested.
+    /// Explicit `ip:port` of the compositor control channel, or `None` to auto-discover by
+    /// scanning upward from [`bridge_protocol::DEFAULT_PORT`].
+    pub host: Option<String>,
+    /// Selected transport.
+    pub connection_type: ConnectionType,
+    /// Whether to print usage and exit (`-h`/`--help`, or an invalid `--connection-type`).
     pub help: bool,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Args {
-            host: "127.0.0.1:7777".to_string(),
-            help: true,
+            host: None,
+            connection_type: ConnectionType::Tcp,
+            help: false,
         }
     }
 }
 
 /// Parse arguments from an iterator that does **not** include the program name.
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
-    let mut host = "127.0.0.1:7777".to_string();
+    let mut host: Option<String> = None;
+    let mut connection_type = ConnectionType::Tcp;
     let mut help = false;
 
     let mut it = args.into_iter();
@@ -28,19 +40,42 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
         match a.as_str() {
             "--host" => {
                 if let Some(v) = it.next() {
-                    host = v;
+                    host = Some(v);
                 }
             }
+            "--connection-type" => match it.next().as_deref() {
+                Some("tcp") => connection_type = ConnectionType::Tcp,
+                // Any other (or missing) value is unsupported for now: show help and exit.
+                _ => help = true,
+            },
             "-h" | "--help" => help = true,
             _ => {}
         }
     }
 
-    Args { host, help }
+    Args {
+        host,
+        connection_type,
+        help,
+    }
+}
+
+/// Resolve the ordered list of addresses to try: the explicit `--host` if given, otherwise
+/// the default upward port scan shared with the compositor.
+pub fn candidate_addrs(host: &Option<String>) -> Vec<String> {
+    match host {
+        Some(h) => vec![h.clone()],
+        None => bridge_protocol::default_scan_addrs(),
+    }
 }
 
 /// Usage string shown for `--help`.
-pub const USAGE: &str = "win-host [--host <ip:port>]";
+pub const USAGE: &str =
+    "win-host [--host <ip:port>] [--connection-type tcp]\n\
+     \n\
+     --host             compositor control channel address. If omitted, scan 127.0.0.1\n\
+     \u{20}                  starting at port 8335 and connect to the first that answers.\n\
+     --connection-type  transport to use. Only 'tcp' is supported (the default).";
 
 #[cfg(test)]
 mod tests {
@@ -49,21 +84,41 @@ mod tests {
     #[test]
     fn defaults_when_empty() {
         let a = parse_args(Vec::<String>::new());
-        assert_eq!(a.host, "127.0.0.1:7777");
+        assert_eq!(a.host, None);
+        assert_eq!(a.connection_type, ConnectionType::Tcp);
         assert!(!a.help);
     }
 
     #[test]
     fn parses_host() {
         let a = parse_args(["--host".to_string(), "10.0.0.5:9999".to_string()]);
-        assert_eq!(a.host, "10.0.0.5:9999");
+        assert_eq!(a.host, Some("10.0.0.5:9999".to_string()));
         assert!(!a.help);
     }
 
     #[test]
     fn host_without_value_keeps_default() {
         let a = parse_args(["--host".to_string()]);
-        assert_eq!(a.host, "127.0.0.1:7777");
+        assert_eq!(a.host, None);
+    }
+
+    #[test]
+    fn connection_type_tcp_ok() {
+        let a = parse_args(["--connection-type".to_string(), "tcp".to_string()]);
+        assert_eq!(a.connection_type, ConnectionType::Tcp);
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn connection_type_invalid_requests_help() {
+        let a = parse_args(["--connection-type".to_string(), "shm".to_string()]);
+        assert!(a.help);
+    }
+
+    #[test]
+    fn connection_type_missing_value_requests_help() {
+        let a = parse_args(["--connection-type".to_string()]);
+        assert!(a.help);
     }
 
     #[test]
@@ -75,14 +130,28 @@ mod tests {
     #[test]
     fn ignores_unknown_args() {
         let a = parse_args(["--nope".to_string(), "--host".to_string(), "x:1".to_string()]);
-        assert_eq!(a.host, "x:1");
+        assert_eq!(a.host, Some("x:1".to_string()));
         assert!(!a.help);
     }
 
     #[test]
-    fn default_has_help_and_default_host() {
+    fn candidates_explicit_host_is_single() {
+        let c = candidate_addrs(&Some("1.2.3.4:5".to_string()));
+        assert_eq!(c, vec!["1.2.3.4:5".to_string()]);
+    }
+
+    #[test]
+    fn candidates_default_is_port_scan() {
+        let c = candidate_addrs(&None);
+        assert_eq!(c, bridge_protocol::default_scan_addrs());
+        assert_eq!(c[0], "127.0.0.1:8335");
+    }
+
+    #[test]
+    fn default_is_tcp_autodiscover() {
         let a = Args::default();
-        assert_eq!(a.host, "127.0.0.1:7777");
-        assert!(a.help);
+        assert_eq!(a.host, None);
+        assert_eq!(a.connection_type, ConnectionType::Tcp);
+        assert!(!a.help);
     }
 }

@@ -1,0 +1,40 @@
+diff --git a/src/utils/sealed_file.rs b/src/utils/sealed_file.rs
+index 2fc478f4..7d6d5a6d 100644
+--- a/src/utils/sealed_file.rs
++++ b/src/utils/sealed_file.rs
+@@ -26,8 +26,20 @@ impl SealedFile {
+     }
+ 
+     /// Create a `[SealedFile]` with the given binary data.
+-    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "android"))]
++    ///
++    /// Prefers a sealed `memfd`; where that is unavailable (e.g. WSL1, which returns
++    /// `ENOSYS` from `memfd_create`/seal `fcntl`) it falls back to a read-only `shm` object.
+     pub fn with_data(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
++        #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "android"))]
++        return Self::with_memfd(name, data).or_else(|_| Self::with_shm(name, data));
++
++        #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "android")))]
++        return Self::with_shm(name, data);
++    }
++
++    /// Create a sealed `memfd`-backed file.
++    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "android"))]
++    fn with_memfd(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
+         use rustix::fs::{MemfdFlags, SealFlags};
+         use std::io::Seek;
+ 
+@@ -50,10 +62,9 @@ impl SealedFile {
+         })
+     }
+ 
+-    /// Create a `[SealedFile]` with the given binary data.
+-    #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "android")))]
+-    pub fn with_data(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
+-        use rand::{Rng, distr::Alphanumeric};
++    /// Create a read-only `shm`-backed file; used where sealed `memfd`s are unavailable.
++    fn with_shm(name: &CStr, data: &[u8]) -> Result<Self, std::io::Error> {
++        use rand::{RngExt, distr::Alphanumeric};
+         use rustix::{
+             io::Errno,
+             shm::{self, Mode},

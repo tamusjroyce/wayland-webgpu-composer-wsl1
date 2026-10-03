@@ -11,3 +11,8 @@ if [ ! -d smithay/.git ]; then
 fi
 git -C smithay fetch origin "$SMITHAY_COMMIT"
 git -C smithay checkout "$SMITHAY_COMMIT"
+
+# Apply the WSL1 keymap fix (sealed memfd -> shm fallback) unless already applied.
+if ! grep -q "fn with_shm" smithay/src/utils/sealed_file.rs; then
+	git -C smithay apply ../patches/smithay-sealed-file-wsl1.patch
+fi

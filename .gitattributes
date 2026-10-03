@@ -3,3 +3,5 @@
 # WGSL and Rust sources are plain text with LF.
 *.wgsl text eol=lf
 *.rs text eol=lf
+# Patches must keep LF so `git apply` works on Linux / CI runners.
+*.patch text eol=lf

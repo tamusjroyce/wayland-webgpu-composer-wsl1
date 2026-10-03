@@ -79,24 +79,34 @@ automatically by GitHub Actions when a `vX.Y.Z` tag is pushed):
 
 | Asset | Contents | For |
 |-------|----------|-----|
-| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd` | Windows |
+| `wayland-webgpu-composer-windows-x64.zip` | `win-host.exe`, `fb-dump.exe`, `install.cmd`, `install.ps1` | Windows |
 | `wayland-webgpu-composer-wsl1-x64.tar.gz` | `wsl-compositor`, `install.sh` (+ `wsl1-install.sh`) | WSL1 (Ubuntu 22.04) |
 
 The quickest path is the **one-line installers**, which auto-discover the latest release,
 download it, and install/run it. The same `install.cmd` / `install.sh` also ship inside the
 archives above.
 
-**Windows** — in a Command Prompt, download and run `install.cmd`. It fetches the latest
-`…-windows-x64.zip`, extracts it to `%LOCALAPPDATA%\wayland-webgpu-composer`, and launches
-`win-host.exe` (any extra args pass straight through, e.g. `--host 127.0.0.1:7777`):
+**Windows (recommended)** — in a Command Prompt, download and run `install.cmd`. This is an
+all-in-one installer/updater/launcher that sets up **both** halves:
+
+1. Downloads/updates the Windows host (`win-host.exe`, `fb-dump.exe`) into
+   `%LOCALAPPDATA%\wayland-webgpu-composer`.
+2. Ensures a WSL1 distro named `WWC-WSL1` exists (imports Ubuntu 22.04 as WSL1 on first run).
+3. Installs/updates the Linux `wsl-compositor` and a demo desktop (Weston) inside it.
+4. Launches the compositor and the WebGPU window.
 
 ```bat
 curl -fL -o install.cmd https://github.com/tamusjroyce/wayland-webgpu-composer-wsl1/releases/latest/download/install.cmd
 install.cmd
 ```
 
+Re-run `install.cmd` any time to update to the latest release and relaunch. Pass a client
+command to change what runs inside the compositor, e.g. `install.cmd "gnome-calculator"`.
+(First run downloads an Ubuntu rootfs, so it takes a few minutes; later runs are quick.)
+
 > Prefer to do it by hand? Download `…-windows-x64.zip`, extract it anywhere, and run
-> `win-host.exe` (and `fb-dump.exe`) from that folder — no installation step required.
+> `win-host.exe` (and `fb-dump.exe`) from that folder — you'll also need the WSL1 compositor
+> running (below) for anything to appear.
 
 **WSL1** — inside your WSL1 distro, pipe `install.sh` to `bash`. It fetches the latest
 `…-wsl1-x64.tar.gz`, installs `wsl-compositor` to `/usr/local/bin`, and pulls the
@@ -153,8 +163,13 @@ window. The directory part of `--shm` must already exist.
 **2. View it on Windows** with the WebGPU host:
 
 ```powershell
-cargo run -p win-host -- --host 127.0.0.1:7777
+cargo run -p win-host
 ```
+
+With no arguments the host auto-discovers the compositor by scanning `127.0.0.1` from port
+8335 upward (the compositor binds the first free port in that range). Pass `--host <ip:port>`
+to target a specific address, or `--connection-type tcp` to select the transport (TCP is the
+default and currently the only option).
 
 A single scalable window appears showing the composited output; your mouse/keyboard in that
 window flow back into the Wayland clients. For a headless check, snapshot to PNG instead:

@@ -22,6 +22,22 @@ pub const SLOT_COUNT: u32 = 2;
 /// Bytes reserved for the header at the start of the shared file.
 pub const HEADER_SIZE: usize = 64;
 
+/// Default base port for the localhost TCP control channel. When no explicit address is
+/// given, both sides start here and scan upward: the compositor binds the first free port,
+/// the host connects to the first port that accepts.
+pub const DEFAULT_PORT: u16 = 8335;
+/// Number of consecutive ports to try when scanning from [`DEFAULT_PORT`].
+pub const PORT_SCAN_COUNT: u16 = 64;
+
+/// Build the ordered list of `127.0.0.1:<port>` addresses to scan when no explicit address
+/// is supplied: `DEFAULT_PORT, DEFAULT_PORT+1, …` for [`PORT_SCAN_COUNT`] ports.
+pub fn default_scan_addrs() -> Vec<String> {
+    let end = DEFAULT_PORT.saturating_add(PORT_SCAN_COUNT);
+    (DEFAULT_PORT..end)
+        .map(|p| format!("127.0.0.1:{p}"))
+        .collect()
+}
+
 // --- Header field byte offsets (all little-endian) ---
 const OFF_MAGIC: usize = 0; // u32
 const OFF_VERSION: usize = 4; // u32
@@ -540,8 +556,21 @@ mod tests {
     }
 
     #[test]
+    fn default_scan_addrs_starts_at_default_port() {
+        let addrs = default_scan_addrs();
+        assert_eq!(addrs.len(), PORT_SCAN_COUNT as usize);
+        assert_eq!(addrs[0], format!("127.0.0.1:{DEFAULT_PORT}"));
+        assert_eq!(addrs[1], format!("127.0.0.1:{}", DEFAULT_PORT + 1));
+        assert_eq!(
+            addrs[addrs.len() - 1],
+            format!("127.0.0.1:{}", DEFAULT_PORT + PORT_SCAN_COUNT - 1)
+        );
+    }
+
+    #[test]
     fn framebuffer_roundtrip() {
         let layout = FrameLayout::new(4, 2);
+
         let mut backing = vec![0u8; layout.total_size() as usize];
         let seq;
         {

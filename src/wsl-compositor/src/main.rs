@@ -32,8 +32,9 @@ struct Args {
     shm_path: String,
     /// Path to the same file as the Windows host should open it (e.g. `C:\\...\\wwc.fb`).
     host_path: String,
-    /// Address the control channel listens on.
-    listen: String,
+    /// Explicit `ip:port` for the control channel, or `None` to bind the first free port
+    /// scanning upward from [`bridge_protocol::DEFAULT_PORT`].
+    listen: Option<String>,
     width: u32,
     height: u32,
     command: Option<String>,
@@ -42,25 +43,37 @@ struct Args {
 fn parse_args() -> Args {
     let mut shm_path = "/mnt/c/Temp/wwc.fb".to_string();
     let mut host_path: Option<String> = None;
-    let mut listen = "127.0.0.1:7777".to_string();
+    let mut listen: Option<String> = None;
     let mut width = 1280u32;
     let mut height = 720u32;
     let mut command = None;
+
+    let usage = "wsl-compositor [--shm <wsl-path>] [--host-path <windows-path>] \
+         [--listen <ip:port>] [--connection-type tcp] [--width N] [--height N] [-c <client-cmd>]\n\
+         \n\
+         --listen           control channel address. If omitted, bind 127.0.0.1 starting at\n\
+         \u{20}                  port 8335 and use the first free port.\n\
+         --connection-type  transport to use. Only 'tcp' is supported (the default).";
 
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--shm" => shm_path = it.next().unwrap_or(shm_path),
             "--host-path" => host_path = it.next(),
-            "--listen" => listen = it.next().unwrap_or(listen),
+            "--listen" => listen = it.next(),
+            "--connection-type" => match it.next().as_deref() {
+                Some("tcp") => {}
+                // Any other (or missing) value is unsupported for now: show help and exit.
+                _ => {
+                    println!("{usage}");
+                    std::process::exit(0);
+                }
+            },
             "--width" => width = it.next().and_then(|v| v.parse().ok()).unwrap_or(width),
             "--height" => height = it.next().and_then(|v| v.parse().ok()).unwrap_or(height),
             "-c" | "--command" => command = it.next(),
             "-h" | "--help" => {
-                println!(
-                    "wsl-compositor [--shm <wsl-path>] [--host-path <windows-path>] \
-                     [--listen <ip:port>] [--width N] [--height N] [-c <client-cmd>]"
-                );
+                println!("{usage}");
                 std::process::exit(0);
             }
             other => eprintln!("ignoring unknown argument: {other}"),
@@ -114,8 +127,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Control channel: background TCP server -> calloop channel of client messages.
     let (ctrl_tx, ctrl_rx) = channel();
-    let bridge = Bridge::spawn(
-        args.listen.clone(),
+    let listen_addrs = match &args.listen {
+        Some(a) => vec![a.clone()],
+        None => bridge_protocol::default_scan_addrs(),
+    };
+    let (bridge, bound_addr) = Bridge::spawn(
+        listen_addrs,
         args.host_path.clone(),
         layout,
         ctrl_tx,
@@ -158,10 +175,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         state.socket_name.to_string_lossy()
     );
     // WSL1 has no display: the composited image is in the shared file, viewed on Windows.
-    tracing::info!(
-        "no on-screen window on WSL1 — view the output on Windows with: cargo run -p win-host -- --host {}",
-        args.listen
-    );
+    match &bound_addr {
+        Some(addr) => tracing::info!(
+            "no on-screen window on WSL1 — view the output on Windows with: \
+             win-host --host {addr}  (or just run win-host; it auto-discovers port {})",
+            bridge_protocol::DEFAULT_PORT
+        ),
+        None => tracing::error!(
+            "control channel failed to bind — the Windows host will not be able to connect"
+        ),
+    }
 
     if let Some(cmd) = args.command.clone() {
         spawn_client(&cmd);
