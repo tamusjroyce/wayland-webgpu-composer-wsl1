@@ -48,6 +48,35 @@ PKGS="labwc|sway|hyprland|kwin-wayland|wayfire|weston|river|cage|dwl|niri"
 IFS='|' read -r -a NAME_ARR <<< "$NAMES"
 IFS='|' read -r -a PKG_ARR <<< "$PKGS"
 
+# Interactive chooser when launched without ONLY and attached to a terminal.
+if [ -z "${ONLY:-}" ] && [ -t 0 ]; then
+	echo "Which desktops to install into this distro?"
+	for i in "${!NAME_ARR[@]}"; do
+		printf '  %2d) %-16s (%s)\n' "$((i + 1))" "${NAME_ARR[$i]}" "${PKG_ARR[$i]}"
+	done
+	echo "   a) all        r) WSL1-recommended: sway labwc weston cage"
+	printf 'Enter numbers (space/comma separated), a, or r [r]: '
+	read -r reply
+	reply="${reply:-r}"
+	case "$reply" in
+		a|A) ONLY="" ;;                                   # empty ONLY installs all
+		r|R) ONLY="sway labwc weston cage" ;;            # the ones that run on WSL1
+		*)
+			sel=""
+			for tok in $(printf '%s' "$reply" | tr ',' ' '); do
+				idx=$((tok - 1))
+				if [ "$tok" -ge 1 ] 2>/dev/null && [ -n "${PKG_ARR[$idx]:-}" ]; then
+					sel="$sel ${PKG_ARR[$idx]}"
+				fi
+			done
+			ONLY="${sel# }"
+			[ -z "$ONLY" ] && { echo "No valid selection; exiting."; exit 1; }
+			;;
+	esac
+	export ONLY
+	echo "Selected: ${ONLY:-all}"
+fi
+
 echo "=== Updating package index ==="
 $APT update || echo "warning: apt-get update reported errors; continuing."
 
@@ -75,5 +104,8 @@ echo "============================================================"
 echo "Installed:   ${installed:-(none)}"
 echo "Unavailable: ${missing:-(none)}"
 echo "============================================================"
-echo "Launch one on top of WWC, e.g.:"
-echo "  XDG_RUNTIME_DIR=/tmp/wwc-xrd wsl-compositor --shm /mnt/c/Users/<you>/wwc/visual.fb -c sway"
+echo "On WSL1 these run nested on WWC: sway, labwc, weston, cage."
+echo "(wayfire needs a GPU; KWin needs memfd_create - both fail on WSL1.)"
+echo "Launch one with the chooser:"
+echo "  bash run-desktop.sh            # pick a desktop, then run win-host on Windows"
+echo "  bash run-desktop.sh sway      # or name it directly"

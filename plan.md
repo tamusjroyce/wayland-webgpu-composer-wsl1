@@ -295,18 +295,26 @@ Full compositors run as nested Wayland clients of this bridge compositor: they c
 renders at least one frame through WWC. Availability depends on the distro release (several are
 only packaged on newer Ubuntu/Debian).
 
-Install status on the default `WWC-WSL1` base (Ubuntu 22.04 "jammy"), 2026-10-04:
+Verified nested on `Ubuntu-Latest-WSL1` (Ubuntu 24.04 "noble"), 2026-10-04. Launch any of them
+with the chooser `run-desktop.sh` (writes configs + starts WWC), then `win-host` on Windows.
+Software rendering only (`WLR_RENDERER=pixman`, `KWIN_COMPOSE=Q`); a D-Bus session is started
+via `dbus-run-session` so panels (waybar) work. WSL1 lacks `memfd_create`, so `run-desktop.sh`
+builds and `LD_PRELOAD`s a shim ([shims/memfd_shim.c](shims/memfd_shim.c)) that falls back to an
+unlinked temp file — this unlocks KWin, `foot`, and GTK4/Qt apps.
 
-- [ ] Labwc (`labwc`) — not in jammy apt; needs Ubuntu 23.10+ or a source build (source is already cloned by `configure`)
-- [*] Sway (`sway`) — runs nested on `Ubuntu-Latest-WSL1` (24.04) and renders through WWC to the Windows host (verified 2026-10-04: `WLR_RENDERER=pixman`, blue bg + fullscreen `weston-terminal`)
-- [ ] Hyprland (`hyprland`) — not in jammy apt; needs newer Ubuntu/PPA or source build
-- [ ] KDE Plasma / KWin (`kwin-wayland`) — installed
-- [ ] Wayfire (`wayfire`) — not in jammy apt; needs Ubuntu 23.10+ or source build
-- [ ] Weston (`weston`) — installed
-- [ ] River (`river`) — not in jammy apt; needs Ubuntu 24.04+ or source build
-- [ ] Cage (`cage`) — installed
-- [ ] dwl (`dwl`) — not in jammy apt; source build (suckless)
-- [ ] Niri (`niri`) — not in jammy apt; needs Ubuntu 24.10+ or `cargo install`
+- [*] Sway (`sway`) — full desktop: waybar panel, `☰ Apps` menu (wofi), floating/movable windows; apps verified (galculator, thunar, xfce4-terminal+htop, mousepad)
+- [*] Labwc (`labwc`) — floating WM + right-click app menu + waybar panel; renders through WWC
+- [*] Weston (`weston`) — nested `--backend=wayland --use-pixman`; own desktop shell/panel
+- [*] Cage (`cage`) — kiosk (one fullscreen app); renders through WWC
+- [*] KDE / KWin (`kwin-wayland`) — works via `KWIN_COMPOSE=Q` (software) + the memfd shim; `kwin_wayland` manages windows with decorations, renders through WWC (full `plasmashell` panel not started — heavy; Qt/KDE *apps* run under any desktop)
+- [ ] Wayfire (`wayfire`) — installed but **infeasible on WSL1**: requires a DRM render node (`Failed to get DRM file descriptor`); no software-compositing mode
+- [ ] Hyprland (`hyprland`) — not packaged on noble, and like wayfire needs DRM/GPU GL (no software mode) — infeasible on WSL1 regardless
+- [ ] dwl (`dwl`) — not packaged on noble; wlroots-thin, so a source build would run with `WLR_RENDERER=pixman` (needs matching `libwlroots-dev`)
+- [ ] River (`river`) — not packaged on noble; wlroots-thin, would run with pixman if built (needs the `zig` toolchain)
+- [ ] Niri (`niri`) — not packaged on noble; smithay-based, would run nested via its winit backend if built (`cargo install niri` + build deps)
+
+Installer: `install-desktops.sh`/`.cmd` now has an interactive chooser (numbers / `a` all /
+`r` WSL1-recommended) and still honours `ONLY="sway labwc ..."` for automation.
 
 ## 5. How to run (target workflow)
 
