@@ -16,11 +16,25 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Logical, Point, Transform};
 use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::foreign_toplevel_list::ForeignToplevelListState;
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::selection::wlr_data_control::DataControlState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::bridge::Bridge;
 
@@ -46,13 +60,28 @@ pub struct State {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<State>,
     pub data_device_state: DataDeviceState,
+    // wlroots-compatibility protocol globals.
+    pub xdg_decoration_state: XdgDecorationState,
+    pub xdg_activation_state: XdgActivationState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
+    pub relative_pointer_state: RelativePointerManagerState,
+    pub pointer_gestures_state: PointerGesturesState,
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub idle_notifier: IdleNotifierState<State>,
+    pub foreign_toplevel_list: ForeignToplevelListState,
+    pub data_control_state: DataControlState,
+    pub ext_data_control_state: ExtDataControlState,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
 }
 
 impl State {
     pub fn new(
-        event_loop: &mut EventLoop<Self>,
+        event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
         layout: FrameLayout,
         map: MmapMut,
@@ -66,6 +95,33 @@ impl State {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        // wlroots-compatibility protocol globals (advertised via delegate_dispatch2!).
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&dh);
+        let pointer_gestures_state = PointerGesturesState::new::<Self>(&dh);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&dh);
+        // Global-only protocols (no state to keep; the global persists in the display).
+        smithay::wayland::content_type::ContentTypeState::new::<Self>(&dh);
+        smithay::wayland::alpha_modifier::AlphaModifierState::new::<Self>(&dh);
+        smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
+        smithay::wayland::tablet_manager::TabletManagerState::new::<Self>(&dh);
+        smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
+        smithay::wayland::presentation::PresentationState::new::<Self>(&dh, 1); // CLOCK_MONOTONIC
+        smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(&dh);
+        smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<Self, _>(&dh, |_client| true);
+        let idle_notifier = IdleNotifierState::<State>::new(&dh, event_loop.handle());
+        let foreign_toplevel_list = ForeignToplevelListState::new::<Self>(&dh);
+        let data_control_state =
+            DataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_client| true);
+        let ext_data_control_state =
+            ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_client| true);
+        smithay::wayland::input_method::InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
         let popups = PopupManager::default();
 
         let mut seat_state = SeatState::new();
@@ -116,6 +172,20 @@ impl State {
             output_manager_state,
             seat_state,
             data_device_state,
+            xdg_decoration_state,
+            xdg_activation_state,
+            primary_selection_state,
+            keyboard_shortcuts_inhibit_state,
+            fractional_scale_state,
+            viewporter_state,
+            single_pixel_buffer_state,
+            relative_pointer_state,
+            pointer_gestures_state,
+            pointer_constraints_state,
+            idle_notifier,
+            foreign_toplevel_list,
+            data_control_state,
+            ext_data_control_state,
             popups,
             seat,
         }

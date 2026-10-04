@@ -16,3 +16,9 @@ git -C smithay checkout "$SMITHAY_COMMIT"
 if ! grep -q "fn with_shm" smithay/src/utils/sealed_file.rs; then
 	git -C smithay apply ../patches/smithay-sealed-file-wsl1.patch
 fi
+
+# Clone labwc (wlroots-based compositor) for reference only — it is not built or linked,
+# just a protocol-coverage reference. Git-ignored like smithay.
+if [ ! -d labwc/.git ]; then
+	git clone --depth 1 https://github.com/labwc/labwc.git labwc
+fi

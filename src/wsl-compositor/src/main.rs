@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.host_path
     );
 
-    let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
 
     // Control channel: background TCP server -> calloop channel of client messages.

@@ -50,7 +50,8 @@ small native Windows host; the two halves talk over the shared framebuffer + con
 | `src/bridge-protocol` | shared | Shared-memory framebuffer layout + the TCP control-channel wire protocol. Pure `std` Rust, builds on both OSes. |
 | `src/fb-dump` | any | Renders the shared framebuffer file to a PNG — headless "visual test". |
 | `src/wwc-setup` | Windows | Setup/launcher GUI (`eframe`) for the MSIX: detects a WSL1 Debian/Ubuntu distro, installs the compositor into it, and launches the host. Excluded from the workspace. |
-| `smithay/` | — | Vendored Smithay (path dependency). |
+| `smithay/` | — | Smithay (path dependency) — cloned by `configure.sh`/`configure.cmd`, not committed. |
+| `labwc/` | — | wlroots-based compositor, cloned by `configure` as a **protocol-coverage reference only** (not built or linked). |
 
 `win-host`, `bridge-protocol`, and `fb-dump` form the root Cargo workspace (Windows-buildable).
 `wsl-compositor` is excluded and built inside WSL1.
@@ -95,8 +96,12 @@ automatically by GitHub Actions):
 3. Double-click the `.msix` and click **Install** (Publisher now shows
    `wayland-webgpu-composer`).
 4. Launch **"Wayland WebGPU Composer"** from the Start Menu. The setup wizard lists your WSL
-   distros, enables only **WSL version 1** Debian/Ubuntu distros (others grayed out), installs
-   the compositor into the one you pick, and opens the WebGPU window.
+   distros, enables only **WSL version 1** Debian/Ubuntu distros (others grayed out), and
+   installs the compositor into the one you pick. Each distro you set up becomes its **own
+   install**: it gets a per-distro data path (`%LOCALAPPDATA%\wayland-webgpu-composer\<distro>`),
+   its own control port, and its own Start Menu entry **"Wayland WebGPU Composer - &lt;distro&gt;"**
+   that relaunches just that distro. Run the wizard again to add another WSL1 distro as a
+   separate install; they can run side by side.
 
 **Windows — portable (no install).** Download `…-windows-x64.zip`, extract it anywhere, and
 run `install.cmd`. It sets up **both** halves and hands off to `run.cmd` to launch them:
@@ -268,11 +273,19 @@ packaging\msix\build-msix.cmd packaging\msix\bin
 
 ## Known limitations
 
-- **xdg-shell + `wl_shm` + seat only** — no `linux-dmabuf`/EGL, no `wlr-layer-shell`, no
-  server-side decorations yet. Shm-based GTK/Qt apps and Weston demos work.
+- **Software / `wl_shm` only** — no `linux-dmabuf`/EGL (there's no GPU in WSL1), so clients
+  render in software. Shm-based GTK/Qt/SDL apps and Weston demos work. For wlroots/Wayland
+  compatibility the compositor advertises a broad protocol set: xdg-shell, xdg-decoration,
+  xdg-activation, `wp_viewporter`, fractional-scale, single-pixel-buffer, content-type,
+  alpha-modifier, presentation-time, primary-selection, keyboard-shortcuts-inhibit,
+  relative-pointer, pointer-constraints, pointer-gestures, cursor-shape, text-input, and
+  tablet (in addition to `wl_compositor`/`wl_subcompositor`/`wl_shm`/`wl_seat`/`wl_output`/
+  `wl_data_device_manager`/`xdg_wm_base`/`zxdg_output_manager_v1`).
+- **Not yet wired** — `wlr-layer-shell`, session-lock, data-control, input-method,
+  virtual-keyboard, `wlr-output-management`, and foreign-toplevel management (these need
+  render or deeper integration and are planned). Server-side decorations are refused — clients
+  draw their own (CSD).
 - **No window management** — every toplevel maps at `(0,0)` and stacks.
-- **No GPU in WSL1** — clients render in software (the compositor exports
-  `LIBGL_ALWAYS_SOFTWARE=1`, `GSK_RENDERER=cairo`, etc.).
 - **`weston --fullscreen` aborts the compositor** on WSL1 — a `rustix` `recvmsg` cmsg
   parsing overflow against a WSL1 syscall quirk. Use size-matching instead (above).
 

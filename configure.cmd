@@ -10,3 +10,6 @@ git -C smithay checkout %SMITHAY_COMMIT% || exit /b 1
 
 REM Apply the WSL1 keymap fix (sealed memfd -> shm fallback) unless already applied.
 findstr /c:"fn with_shm" smithay\src\utils\sealed_file.rs >nul 2>&1 || git -C smithay apply ../patches/smithay-sealed-file-wsl1.patch || exit /b 1
+
+REM Clone labwc (wlroots-based compositor) for reference only — not built or linked.
+if not exist labwc\.git git clone --depth 1 https://github.com/labwc/labwc.git labwc || exit /b 1

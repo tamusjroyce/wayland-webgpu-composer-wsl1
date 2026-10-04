@@ -1,13 +1,16 @@
 //! Setup/launcher wizard for wayland-webgpu-composer.
 //!
 //! Detects installed WSL distros, shows which are usable (WSL **version 1** and
-//! Debian/Ubuntu-based), lets the user pick one, installs the Linux compositor into it,
-//! and launches the compositor + the WebGPU host. The MSIX package wires this executable
-//! to the "Wayland WebGPU Composer" Start Menu entry.
+//! Debian/Ubuntu-based), lets the user pick one, installs the Linux compositor into it, and
+//! creates a per-distro Start Menu shortcut ("Wayland WebGPU Composer - <distro>") that
+//! relaunches that distro via `wwc-setup --run <distro>`. Run the wizard again to set up
+//! another WSL1 distro as a separate install.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io;
 use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -91,6 +94,101 @@ fn win_to_wsl(p: &str) -> String {
     format!("/mnt/{drive}{rest}")
 }
 
+/// Per-distro install/data root under %LOCALAPPDATA%.
+fn install_root(distro: &str) -> PathBuf {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\".into());
+    Path::new(&local).join("wayland-webgpu-composer").join(distro)
+}
+
+/// Returns (windows path, wsl path) of the per-distro shared framebuffer.
+fn fb_paths(distro: &str) -> (PathBuf, String) {
+    let dir = install_root(distro).join("fb");
+    let _ = std::fs::create_dir_all(&dir);
+    let fb_win = dir.join("desktop.fb");
+    let fb_wsl = win_to_wsl(&fb_win.to_string_lossy());
+    (fb_win, fb_wsl)
+}
+
+/// Deterministic per-distro control-channel port. WSL1 shares the Windows loopback, so each
+/// distro's compositor must bind a distinct port for its host to reach the right one.
+fn port_for(distro: &str) -> u16 {
+    let h = distro
+        .bytes()
+        .fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    8335 + (h % 2000) as u16
+}
+
+/// Download + install the Linux compositor and demo desktop into the distro.
+fn install_compositor(distro: &str) -> io::Result<()> {
+    let setup = format!(
+        "set -e; cd /tmp; curl -fL '{WSL_TARBALL_URL}' -o wwc.tgz; tar -xzf wwc.tgz; \
+         install -Dm755 wsl-compositor /usr/local/bin/wsl-compositor; \
+         export DEBIAN_FRONTEND=noninteractive; \
+         apt-get -o APT::Sandbox::User=root update -qq || true; \
+         apt-get -o APT::Sandbox::User=root install -y libxkbcommon0 weston dmz-cursor-theme >/dev/null 2>&1 || true; \
+         rm -f wwc.tgz"
+    );
+    let status = wsl_cmd(&["-d", distro, "-u", "root", "--", "bash", "-lc", &setup]).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other("failed to install the compositor into the distro"))
+    }
+}
+
+/// Start (or restart) the compositor for a distro and the WebGPU host, both detached.
+fn launch(distro: &str) {
+    let (_fb_win, fb_wsl) = fb_paths(distro);
+    let port = port_for(distro);
+    // `pkill -x` runs inside this distro's PID namespace, so it only stops this distro's
+    // compositor.
+    let run = format!(
+        "pkill -9 -x wsl-compositor 2>/dev/null; mkdir -p /tmp/wwc-desk; \
+         XDG_RUNTIME_DIR=/tmp/wwc-desk /usr/local/bin/wsl-compositor \
+         --listen 127.0.0.1:{port} --shm '{fb_wsl}' --width 1440 --height 900 \
+         -c 'weston --use-pixman --width=1280 --height=800'"
+    );
+    let _ = Command::new("wsl.exe")
+        .args(["-d", distro, "-u", "root", "--", "bash", "-lc", &run])
+        .env("WSL_UTF8", "1")
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let host = dir.join("win-host.exe");
+            let _ = Command::new(host)
+                .args(["--host", &format!("127.0.0.1:{port}")])
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
+}
+
+/// Create (or overwrite) the per-distro Start Menu shortcut that relaunches the distro.
+fn create_shortcut(distro: &str) -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let appdata = std::env::var("APPDATA").map_err(|_| io::Error::other("APPDATA not set"))?;
+    let programs = Path::new(&appdata)
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs");
+    std::fs::create_dir_all(&programs)?;
+    let lnk = programs.join(format!("Wayland WebGPU Composer - {distro}.lnk"));
+    let mut link = mslnk::ShellLink::new(&exe).map_err(io::Error::other)?;
+    link.set_arguments(Some(format!("--run {distro}")));
+    link.set_name(Some(format!("Wayland WebGPU Composer - {distro}")));
+    link.create_lnk(&lnk).map_err(io::Error::other)?;
+    Ok(lnk)
+}
+
 fn log_line(log: &Arc<Mutex<String>>, line: impl AsRef<str>) {
     if let Ok(mut g) = log.lock() {
         g.push_str(line.as_ref());
@@ -131,48 +229,28 @@ impl SetupApp {
         busy.store(true, Ordering::SeqCst);
         thread::spawn(move || {
             log_line(&log, format!("Installing compositor into '{distro}'..."));
-            let setup = format!(
-                "set -e; cd /tmp; curl -fL '{WSL_TARBALL_URL}' -o wwc.tgz; tar -xzf wwc.tgz; \
-                 install -Dm755 wsl-compositor /usr/local/bin/wsl-compositor; \
-                 export DEBIAN_FRONTEND=noninteractive; \
-                 apt-get -o APT::Sandbox::User=root update -qq || true; \
-                 apt-get -o APT::Sandbox::User=root install -y libxkbcommon0 weston dmz-cursor-theme >/dev/null 2>&1 || true; \
-                 rm -f wwc.tgz"
-            );
-            let status = wsl_cmd(&["-d", &distro, "-u", "root", "--", "bash", "-lc", &setup]).status();
-            if !matches!(status, Ok(s) if s.success()) {
-                log_line(&log, "ERROR: failed to install the compositor into the distro.");
+            if let Err(e) = install_compositor(&distro) {
+                log_line(&log, format!("ERROR: {e}"));
                 busy.store(false, Ordering::SeqCst);
                 return;
             }
 
-            // Shared framebuffer lives under %LOCALAPPDATA% so both sides can map it.
-            let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\".into());
-            let fb_dir = format!("{local}\\wayland-webgpu-composer\\fb");
-            let _ = std::fs::create_dir_all(&fb_dir);
-            let fb_win = format!("{fb_dir}\\desktop.fb");
-            let fb_wsl = win_to_wsl(&fb_win);
-
-            log_line(&log, "Starting compositor...");
-            let run = format!(
-                "pkill -9 -x wsl-compositor 2>/dev/null; mkdir -p /tmp/wwc-desk; \
-                 XDG_RUNTIME_DIR=/tmp/wwc-desk /usr/local/bin/wsl-compositor \
-                 --shm '{fb_wsl}' --width 1440 --height 900 \
-                 -c 'weston --use-pixman --width=1280 --height=800'"
-            );
-            let _ = wsl_cmd(&["-d", &distro, "-u", "root", "--", "bash", "-lc", &run]).spawn();
-
-            log_line(&log, "Starting WebGPU window...");
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(dir) = exe.parent() {
-                    let host = dir.join("win-host.exe");
-                    let mut c = Command::new(host);
-                    c.creation_flags(CREATE_NO_WINDOW);
-                    let _ = c.spawn();
-                }
+            log_line(&log, format!("Creating Start Menu shortcut for '{distro}'..."));
+            match create_shortcut(&distro) {
+                Ok(p) => log_line(&log, format!("  {}", p.display())),
+                Err(e) => log_line(&log, format!("  warning: could not create shortcut: {e}")),
             }
 
-            log_line(&log, "Running. You can close this window.");
+            log_line(&log, "Starting compositor and WebGPU window...");
+            launch(&distro);
+
+            log_line(
+                &log,
+                format!(
+                    "Done. Launch again any time from Start Menu: \
+                     \"Wayland WebGPU Composer - {distro}\"."
+                ),
+            );
             finished.store(true, Ordering::SeqCst);
             busy.store(false, Ordering::SeqCst);
         });
@@ -190,7 +268,8 @@ impl eframe::App for SetupApp {
             ui.label("Run Linux desktop apps inside Windows through a WebGPU window.");
             ui.add_space(8.0);
             ui.label("Choose the WSL distro to host the compositor. Only WSL version 1 \
-                      Debian/Ubuntu distros are supported.");
+                      Debian/Ubuntu distros are supported. Run this again to set up another \
+                      distro as a separate install.");
             ui.add_space(8.0);
 
             if self.distros.is_empty() {
@@ -262,6 +341,15 @@ impl eframe::App for SetupApp {
 }
 
 fn main() -> eframe::Result<()> {
+    // Launcher mode (from the per-distro Start Menu shortcut): relaunch and exit, no window.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--run") {
+        if let Some(distro) = args.get(pos + 1) {
+            launch(distro);
+        }
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([640.0, 500.0])

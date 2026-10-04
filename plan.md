@@ -116,6 +116,135 @@ What is and is not possible, and why the chosen design follows:
 - [ ] Shared-memory frame signaling via atomics to avoid TCP wakeups
 - [ ] Explore `linux-dmabuf` / GPU-side upload paths if a future WSL gains GPU access
 
+### Phase 6 — wlroots / Wayland protocol compatibility
+
+Reference compositor: `labwc/` (cloned by `configure`). A protocol is **complete** when its
+global is created (+ handler where required) and advertised to clients. Two tests per item:
+- **code test** — the compositor builds in WSL1 (`cd src/wsl-compositor && cargo build`).
+- **e2e test** — `scripts/protocol-check.sh` runs the compositor and `wayland-info` and the
+  global appears in the advertised interface list.
+
+- [*] Protocol e2e harness (`scripts/protocol-check.sh` + `wayland-info`/`weston-info`)
+  - [*] code: script starts the compositor, runs the info tool, greps the global list
+  - [*] e2e: harness prints the advertised interfaces (31 verified 2026-10-04)
+
+Core (smallvil baseline):
+- [*] `wl_compositor`
+  - [*] code: `CompositorState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wl_subcompositor`
+  - [*] code: provided by `CompositorState`
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wl_shm`
+  - [*] code: `ShmState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wl_seat`
+  - [*] code: `SeatState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wl_output`
+  - [*] code: `Output` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wl_data_device_manager`
+  - [*] code: `DataDeviceState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `xdg_wm_base`
+  - [*] code: `XdgShellState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zxdg_output_manager_v1`
+  - [*] code: `OutputManagerState::new_with_xdg_output` builds
+  - [*] e2e: advertised in `wayland-info`
+
+Implemented extensions:
+- [*] `zxdg_decoration_manager_v1`
+  - [*] code: `XdgDecorationState` + handler (CSD) builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `xdg_activation_v1`
+  - [*] code: `XdgActivationState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_viewporter`
+  - [*] code: `ViewporterState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_fractional_scale_manager_v1`
+  - [*] code: `FractionalScaleManagerState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_single_pixel_buffer_manager_v1`
+  - [*] code: `SinglePixelBufferState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_presentation`
+  - [*] code: `PresentationState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_content_type_manager_v1`
+  - [*] code: `ContentTypeState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_alpha_modifier_v1`
+  - [*] code: `AlphaModifierState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `wp_cursor_shape_manager_v1`
+  - [*] code: `CursorShapeManagerState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_primary_selection_device_manager_v1`
+  - [*] code: `PrimarySelectionState` + handler + focus wiring builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_keyboard_shortcuts_inhibit_manager_v1`
+  - [*] code: `KeyboardShortcutsInhibitState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_relative_pointer_manager_v1`
+  - [*] code: `RelativePointerManagerState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_pointer_constraints_v1`
+  - [*] code: `PointerConstraintsState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_pointer_gestures_v1`
+  - [*] code: `PointerGesturesState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_text_input_manager_v3`
+  - [*] code: `TextInputManagerState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_tablet_manager_v2`
+  - [*] code: `TabletManagerState` + `TabletSeatHandler` builds
+  - [*] e2e: advertised in `wayland-info`
+
+Newly wired (supported by smithay):
+- [*] `zwp_idle_inhibit_manager_v1`
+  - [*] code: `IdleInhibitManagerState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `ext_idle_notifier_v1`
+  - [*] code: `IdleNotifierState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwlr_data_control_manager_v1`
+  - [*] code: `DataControlState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `ext_data_control_manager_v1`
+  - [*] code: ext data-control global + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `ext_foreign_toplevel_list_v1`
+  - [*] code: `ForeignToplevelListState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_virtual_keyboard_manager_v1`
+  - [*] code: `VirtualKeyboardManagerState` global builds
+  - [*] e2e: advertised in `wayland-info`
+- [*] `zwp_input_method_manager_v2`
+  - [*] code: `InputMethodManagerState` + handler builds
+  - [*] e2e: advertised in `wayland-info`
+
+Pending — global is easy but needs compositing of their surfaces to be useful:
+- [ ] `zwlr_layer_shell_v1`
+  - [ ] code: `WlrLayerShellState` + handler builds
+  - [ ] e2e: advertised in `wayland-info`
+  - [ ] render: layer surfaces composited into the framebuffer
+- [ ] `ext_session_lock_manager_v1`
+  - [ ] code: `SessionLockManagerState` + handler builds
+  - [ ] e2e: advertised in `wayland-info`
+  - [ ] render: lock surface composited over outputs
+
+Blocked (not provided by the vendored smithay or impossible on WSL1):
+- [ ] `zwp_linux_dmabuf_v1` — blocked: no GPU/DRM in WSL1 (software `wl_shm` only)
+- [ ] `zwp_linux_explicit_synchronization_v1` — blocked: GPU sync; N/A on WSL1
+- [ ] `zwlr_foreign_toplevel_manager_v1` — blocked: not in vendored smithay (use `ext_foreign_toplevel_list_v1`)
+- [ ] `zwlr_output_manager_v1` — blocked: wlr-output-management not in vendored smithay
+- [ ] `ext_workspace_manager_v1` — blocked: not in vendored smithay
+- [ ] `wp_tearing_control_manager_v1` — blocked: not in vendored smithay version
+
 ## 5. How to run (target workflow)
 
 1. On **Windows**: `cargo run -p win-host -- --shm C:\Users\<you>\AppData\Local\Temp\wwc.fb`
