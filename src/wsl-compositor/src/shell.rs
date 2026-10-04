@@ -2,12 +2,15 @@
 //! intentionally omitted for this bridge compositor.
 
 use smithay::desktop::{
-    find_popup_root_surface, get_popup_toplevel_coords, PopupKind, PopupManager, Space, Window,
+    find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKind,
+    PopupManager, Space, Window, WindowSurfaceType,
 };
+use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::{wl_seat, wl_surface::WlSurface};
 use smithay::utils::Serial;
 use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::wlr_layer::LayerSurfaceData;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -21,8 +24,24 @@ impl XdgShellHandler for State {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface().clone();
         let window = Window::new_wayland_window(surface);
         self.space.map_element(window, (0, 0), false);
+        self.foreign_toplevel
+            .window_created(&self.display_handle, wl_surface, String::new(), String::new());
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let wl_surface = surface.wl_surface().clone();
+        self.foreign_toplevel.window_closed(&wl_surface);
+        let window = self
+            .space
+            .elements()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == &wl_surface).unwrap_or(false))
+            .cloned();
+        if let Some(window) = window {
+            self.space.unmap_elem(&window);
+        }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -93,7 +112,64 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
     }
 }
 
+/// Handle a commit on a `wlr_layer_shell` surface: arrange the output's layers and send the
+/// initial configure so the client can size itself.
+pub fn handle_layer_commit(output: &Output, surface: &WlSurface) {
+    let has_layer = {
+        let map = layer_map_for_output(output);
+        map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+            .is_some()
+    };
+    if !has_layer {
+        return;
+    }
+
+    let initial_configure_sent = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<LayerSurfaceData>()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .initial_configure_sent
+    });
+
+    let mut map = layer_map_for_output(output);
+    map.arrange();
+    if !initial_configure_sent {
+        let layer = map
+            .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+            .unwrap();
+        layer.layer_surface().send_configure();
+    }
+}
+
 impl State {
+    /// Re-read a toplevel's title/app-id after a commit and push updates to foreign-toplevel
+    /// handles if they changed.
+    pub fn refresh_window_meta(&mut self, root: &WlSurface) {
+        let is_toplevel = self
+            .space
+            .elements()
+            .any(|w| w.toplevel().map(|t| t.wl_surface() == root).unwrap_or(false));
+        if !is_toplevel {
+            return;
+        }
+        let (title, app_id) = with_states(root, |states| {
+            match states.data_map.get::<XdgToplevelSurfaceData>() {
+                Some(data) => {
+                    let data = data.lock().unwrap();
+                    (
+                        data.title.clone().unwrap_or_default(),
+                        data.app_id.clone().unwrap_or_default(),
+                    )
+                }
+                None => (String::new(), String::new()),
+            }
+        });
+        self.foreign_toplevel.window_updated(root, title, app_id);
+    }
+
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;

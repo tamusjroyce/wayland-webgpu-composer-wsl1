@@ -29,6 +29,7 @@ use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataCo
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::selection::wlr_data_control::DataControlState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
@@ -37,6 +38,8 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 
 use crate::bridge::Bridge;
+use crate::protocols::foreign_toplevel::ForeignToplevelManagerState;
+use crate::protocols::session_lock::SessionLockState;
 
 pub struct State {
     pub start_time: Instant,
@@ -75,6 +78,10 @@ pub struct State {
     pub foreign_toplevel_list: ForeignToplevelListState,
     pub data_control_state: DataControlState,
     pub ext_data_control_state: ExtDataControlState,
+    pub layer_shell_state: WlrLayerShellState,
+    // Hand-rolled wlroots/staging protocols (see `protocols/`).
+    pub foreign_toplevel: ForeignToplevelManagerState,
+    pub session_lock: SessionLockState,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
 }
@@ -122,6 +129,14 @@ impl State {
         let ext_data_control_state =
             ExtDataControlState::new::<Self, _>(&dh, Some(&primary_selection_state), |_client| true);
         smithay::wayland::input_method::InputMethodManagerState::new::<Self, _>(&dh, |_client| true);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
+        // Hand-rolled protocols not provided by the vendored smithay.
+        crate::protocols::tearing::create_global(&dh);
+        crate::protocols::output_management::create_global(&dh);
+        crate::protocols::foreign_toplevel::create_global(&dh);
+        crate::protocols::session_lock::create_global(&dh);
+        let foreign_toplevel = ForeignToplevelManagerState::default();
+        let session_lock = SessionLockState::default();
         let popups = PopupManager::default();
 
         let mut seat_state = SeatState::new();
@@ -186,6 +201,9 @@ impl State {
             foreign_toplevel_list,
             data_control_state,
             ext_data_control_state,
+            layer_shell_state,
+            foreign_toplevel,
+            session_lock,
             popups,
             seat,
         }

@@ -62,7 +62,7 @@ impl State {
             ButtonState::Released
         };
 
-        if pressed && !pointer.is_grabbed() {
+        if pressed && !pointer.is_grabbed() && !self.session_lock.is_active() {
             if let Some((window, _)) = self
                 .space
                 .element_under(pointer.current_location())

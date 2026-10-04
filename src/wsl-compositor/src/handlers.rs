@@ -2,12 +2,12 @@
 
 use smithay::backend::input::TabletToolDescriptor;
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
-use smithay::desktop::space::SpaceElement;
-use smithay::desktop::{PopupKind, PopupManager};
+use smithay::desktop::{layer_map_for_output, LayerSurface, PopupKind, PopupManager};
 use smithay::input::dnd::{DnDGrab, DndGrabHandler, GrabType, Source};
 use smithay::input::pointer::{CursorImageStatus, Focus};
 use smithay::input::tablet::TabletSeatHandler;
 use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
@@ -42,6 +42,9 @@ use smithay::wayland::selection::primary_selection::{
 use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
+use smithay::wayland::shell::wlr_layer::{
+    Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xdg_activation::{
@@ -78,9 +81,12 @@ impl CompositorHandler for State {
             {
                 window.on_commit();
             }
+            self.refresh_window_meta(&root);
         }
 
         shell::handle_commit(&mut self.popups, &self.space, surface);
+        shell::handle_layer_commit(&self.output, surface);
+        self.session_lock_commit(surface);
     }
 }
 
@@ -248,6 +254,39 @@ impl ForeignToplevelListHandler for State {
 impl DataControlHandler for State {
     fn data_control_state(&mut self) -> &mut DataControlState {
         &mut self.data_control_state
+    }
+}
+
+impl WlrLayerShellHandler for State {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: WlrLayerSurface,
+        wl_output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        let output = wl_output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .unwrap_or_else(|| self.output.clone());
+        let mut map = layer_map_for_output(&output);
+        let _ = map.map_layer(&LayerSurface::new(surface, namespace));
+    }
+
+    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        let output = self.output.clone();
+        let mut map = layer_map_for_output(&output);
+        let layer = map
+            .layers()
+            .find(|&l| l.layer_surface() == &surface)
+            .cloned();
+        if let Some(layer) = layer {
+            map.unmap_layer(&layer);
+        }
     }
 }
 

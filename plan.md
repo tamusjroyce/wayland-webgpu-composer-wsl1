@@ -126,7 +126,35 @@ global is created (+ handler where required) and advertised to clients. Two test
 
 - [*] Protocol e2e harness (`scripts/protocol-check.sh` + `wayland-info`/`weston-info`)
   - [*] code: script starts the compositor, runs the info tool, greps the global list
-  - [*] e2e: harness prints the advertised interfaces (31 verified 2026-10-04)
+  - [*] e2e: harness prints the advertised interfaces (36 verified 2026-10-04)
+
+#### Desktop-readiness matrix (sway / KDE Plasma)
+
+Protocols commonly required by full window managers and desktops. Each maps to a concrete
+Wayland global; "complete" means the global is advertised and handled per its spec. Items not
+yet in smithay are hand-rolled with smithay's `Dispatch2`/`GlobalDispatch2` (bindings re-exported
+from `wayland-protocols`/`wayland-protocols-wlr`), using `labwc/` as the behavioural reference.
+
+- [*] `xdg-shell` -> `xdg_wm_base` (windows map + configure + popups)
+- [*] `layer-shell` -> `zwlr_layer_shell_v1` (render-integrated: panels/bars)
+- [*] `xdg-decoration` -> `zxdg_decoration_manager_v1` (forces client-side decorations)
+- [ ] `linux-dmabuf` -> `zwp_linux_dmabuf_v1` - blocked: no GPU/DRM on WSL1; clients fall back to `wl_shm`
+- [*] `viewporter` -> `wp_viewporter`
+- [*] `fractional-scale` -> `wp_fractional_scale_manager_v1`
+- [*] `cursor-shape` -> `wp_cursor_shape_manager_v1`
+- [*] `data-control` -> `zwlr_data_control_manager_v1` + `ext_data_control_manager_v1`
+- [*] `foreign-toplevel` (list) -> `ext_foreign_toplevel_list_v1`
+  - [*] `foreign-toplevel` (management) -> `zwlr_foreign_toplevel_manager_v1`
+- [*] `xdg-output` -> `zxdg_output_manager_v1`
+- [*] `output-management` -> `zwlr_output_manager_v1` (read-only heads)
+- [*] `xdg-activation` -> `xdg_activation_v1`
+- [*] `presentation-time` -> `wp_presentation`
+- [*] `idle-inhibit` -> `zwp_idle_inhibit_manager_v1`
+- [*] `pointer-constraints` -> `zwp_pointer_constraints_v1`
+- [*] `relative-pointer` -> `zwp_relative_pointer_manager_v1`
+- [*] `pointer-gestures` -> `zwp_pointer_gestures_v1`
+- [*] `primary-selection` -> `zwp_primary_selection_device_manager_v1`
+- [*] `text-input-v3` -> `zwp_text_input_manager_v3`
 
 Core (smallvil baseline):
 - [*] `wl_compositor`
@@ -228,22 +256,35 @@ Newly wired (supported by smithay):
   - [*] e2e: advertised in `wayland-info`
 
 Pending — global is easy but needs compositing of their surfaces to be useful:
-- [ ] `zwlr_layer_shell_v1`
-  - [ ] code: `WlrLayerShellState` + handler builds
-  - [ ] e2e: advertised in `wayland-info`
-  - [ ] render: layer surfaces composited into the framebuffer
-- [ ] `ext_session_lock_manager_v1`
-  - [ ] code: `SessionLockManagerState` + handler builds
-  - [ ] e2e: advertised in `wayland-info`
-  - [ ] render: lock surface composited over outputs
+- [*] `zwlr_layer_shell_v1`
+  - [*] code: `WlrLayerShellState` + `WlrLayerShellHandler` build (new/destroy layer, commit arrange + initial configure)
+  - [*] e2e: advertised in `wayland-info` (via `scripts/protocol-check.sh`)
+  - [*] render: layer surfaces composited into the framebuffer (background/bottom under windows, top/overlay over; positioned via `layer_map` geometry; frame callbacks sent)
 
-Blocked (not provided by the vendored smithay or impossible on WSL1):
+Hand-rolled via smithay `Dispatch2`/`GlobalDispatch2` (bindings re-exported from
+`wayland-protocols`/`wayland-protocols-wlr`; `labwc/` used as the behavioural reference).
+All four verified advertised + crash-free with a real client via `scripts/protocol-check.sh`
+(release binary; the debug build trips a WSL1-only rustix cmsg overflow check in the receive path):
+- [*] `wp_tearing_control_manager_v1` (labwc `src/tearing.c`)
+  - [*] code: manager + `wp_tearing_control_v1` child; accept and ignore the presentation hint (no tearing on the shm path)
+  - [*] e2e: advertised in `wayland-info`
+- [*] `ext_session_lock_manager_v1` (labwc `src/session-lock.c`)
+  - [*] code: `lock` stores the lock; `get_lock_surface` sends `configure`; first buffer commit sends `locked`; `unlock_and_destroy` clears the lock
+  - [*] e2e: advertised in `wayland-info`
+  - [*] render: output blanked and the lock surface composited over it; keyboard focus routed to the lock surface and normal-client focus changes suppressed while locked
+- [*] `zwlr_foreign_toplevel_manager_v1` (labwc `src/foreign-toplevel/`)
+  - [*] code: emit `toplevel` + title/app_id/state/done per window; `activate` raises+focuses, `close` sends `xdg_toplevel.close`; maximize/minimize/fullscreen/rectangle accepted
+  - [*] e2e: advertised in `wayland-info`
+  - [*] lifecycle: handles track map (`new_toplevel`), title/app-id changes (commit), and `closed` on unmap (`toplevel_destroyed`)
+- [*] `zwlr_output_manager_v1` (labwc `src/output-state.c`, `output-virtual.c`)
+  - [*] code: advertise one head + mode (name/description/size/refresh/enabled/current_mode/position/transform/scale/make/model) then `done`
+  - [*] e2e: advertised in `wayland-info`
+  - [*] config: `create_configuration` -> `test`/`apply` reply `failed` (single fixed virtual output)
+
+Blocked (impossible on WSL1 or needs a model the bridge compositor lacks):
 - [ ] `zwp_linux_dmabuf_v1` — blocked: no GPU/DRM in WSL1 (software `wl_shm` only)
-- [ ] `zwp_linux_explicit_synchronization_v1` — blocked: GPU sync; N/A on WSL1
-- [ ] `zwlr_foreign_toplevel_manager_v1` — blocked: not in vendored smithay (use `ext_foreign_toplevel_list_v1`)
-- [ ] `zwlr_output_manager_v1` — blocked: wlr-output-management not in vendored smithay
-- [ ] `ext_workspace_manager_v1` — blocked: not in vendored smithay
-- [ ] `wp_tearing_control_manager_v1` — blocked: not in vendored smithay version
+- [ ] `zwp_linux_explicit_synchronization_v1` — blocked: GPU fence sync; N/A on WSL1
+- [ ] `ext_workspace_manager_v1` — deferred: needs a real workspace model not present in this bridge compositor
 
 ## 5. How to run (target workflow)
 

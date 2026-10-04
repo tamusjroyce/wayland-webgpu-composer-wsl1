@@ -7,6 +7,7 @@
 mod bridge;
 mod handlers;
 mod input;
+mod protocols;
 mod render;
 mod shell;
 mod state;
