@@ -10,8 +10,8 @@ use memmap2::Mmap;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopBuilder;
-use winit::keyboard::PhysicalKey;
-use winit::window::WindowBuilder;
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{Fullscreen, WindowBuilder};
 
 use win_host::gpu::GpuState;
 use win_host::{args, bridge, input, shared, UserEvent};
@@ -34,8 +34,9 @@ fn main() {
         .expect("create event loop");
     let window = std::sync::Arc::new(
         WindowBuilder::new()
-            .with_title("WSL1 Wayland → WebGPU")
+            .with_title("WSL1 Wayland → WebGPU  (F11 fullscreen · F10 minimize)")
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
+            .with_decorations(true)
             .with_resizable(true)
             .build(&event_loop)
             .expect("create window"),
@@ -47,6 +48,8 @@ fn main() {
     let tx = bridge::spawn(args::candidate_addrs(&parsed.host), proxy);
 
     let mut shm: Option<Mmap> = None;
+    // Host-side window state (F11 toggles borderless fullscreen).
+    let mut fullscreen = false;
 
     event_loop
         .run(move |event, elwt| {
@@ -104,6 +107,23 @@ fn main() {
                         });
                     }
                     WindowEvent::KeyboardInput { event, .. } => {
+                        // Host-side window controls, handled locally (not forwarded to sway).
+                        if event.state == ElementState::Pressed {
+                            match event.physical_key {
+                                PhysicalKey::Code(KeyCode::F11) => {
+                                    fullscreen = !fullscreen;
+                                    gpu.window().set_fullscreen(
+                                        fullscreen.then(|| Fullscreen::Borderless(None)),
+                                    );
+                                    return;
+                                }
+                                PhysicalKey::Code(KeyCode::F10) => {
+                                    gpu.window().set_minimized(true);
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
                         if let PhysicalKey::Code(code) = event.physical_key {
                             if let Some(evdev) = input::keycode_to_evdev(code) {
                                 let _ = tx.send(ClientMessage::Key {

@@ -286,6 +286,28 @@ Blocked (impossible on WSL1 or needs a model the bridge compositor lacks):
 - [ ] `zwp_linux_explicit_synchronization_v1` — blocked: GPU fence sync; N/A on WSL1
 - [ ] `ext_workspace_manager_v1` — deferred: needs a real workspace model not present in this bridge compositor
 
+#### Nested desktop / compositor bring-up (run on top of WWC)
+
+Full compositors run as nested Wayland clients of this bridge compositor: they connect to
+`WAYLAND_DISPLAY` and present into the shared framebuffer. Install them with
+`install-desktops.sh` (Linux/WSL, or Git Bash which re-dispatches into WSL) or
+`install-desktops.cmd` (Windows -> `WWC-WSL1`). Check a box once the compositor launches and
+renders at least one frame through WWC. Availability depends on the distro release (several are
+only packaged on newer Ubuntu/Debian).
+
+Install status on the default `WWC-WSL1` base (Ubuntu 22.04 "jammy"), 2026-10-04:
+
+- [ ] Labwc (`labwc`) — not in jammy apt; needs Ubuntu 23.10+ or a source build (source is already cloned by `configure`)
+- [*] Sway (`sway`) — runs nested on `Ubuntu-Latest-WSL1` (24.04) and renders through WWC to the Windows host (verified 2026-10-04: `WLR_RENDERER=pixman`, blue bg + fullscreen `weston-terminal`)
+- [ ] Hyprland (`hyprland`) — not in jammy apt; needs newer Ubuntu/PPA or source build
+- [ ] KDE Plasma / KWin (`kwin-wayland`) — installed
+- [ ] Wayfire (`wayfire`) — not in jammy apt; needs Ubuntu 23.10+ or source build
+- [ ] Weston (`weston`) — installed
+- [ ] River (`river`) — not in jammy apt; needs Ubuntu 24.04+ or source build
+- [ ] Cage (`cage`) — installed
+- [ ] dwl (`dwl`) — not in jammy apt; source build (suckless)
+- [ ] Niri (`niri`) — not in jammy apt; needs Ubuntu 24.10+ or `cargo install`
+
 ## 5. How to run (target workflow)
 
 1. On **Windows**: `cargo run -p win-host -- --shm C:\Users\<you>\AppData\Local\Temp\wwc.fb`
