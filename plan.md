@@ -316,6 +316,37 @@ unlinked temp file — this unlocks KWin, `foot`, and GTK4/Qt apps.
 Installer: `install-desktops.sh`/`.cmd` now has an interactive chooser (numbers / `a` all /
 `r` WSL1-recommended) and still honours `ONLY="sway labwc ..."` for automation.
 
+### Phase 7 — WebGPU GPU acceleration path
+
+Two meanings of "GPU support", with very different feasibility on WSL1:
+
+**Client 3D (OpenGL/Vulkan for apps, games, wayfire/hyprland) — NOT possible on WSL1.** WSL1 has
+no GPU device: no `/dev/dri` render node and no `/dev/dxg` (the paravirtual GPU that only *WSL2*
+exposes via `dxgkrnl` + Mesa's `d3d12`/Dozen drivers). WebGPU cannot tunnel arbitrary GL/Vulkan
+from guest to host. So GL-only compositors (wayfire, hyprland) and GPU apps can't be accelerated
+here; the only route to real client GPU is running the compositor under **WSL2**, where
+`/dev/dxg` provides a render node.
+
+**Host-side compositing/presentation via WebGPU — feasible, and partly done.** `win-host` already
+uploads the shared framebuffer to a texture and scales/presents it on the GPU. The next step is to
+move *compositing itself* onto the host GPU:
+
+- [*] Present path on GPU — texture upload + fullscreen-quad sampling + scaling (existing).
+- [*] Protocol foundation — `SurfaceQuad` + `ServerMessage::GpuScene` (back-to-front surface list
+  with geometry/opacity), clip-space mapping, encode/decode + unit tests. Additive, non-breaking.
+- [ ] Shared-memory **surface pool** — region where the compositor copies each client `wl_shm`
+  buffer once; `SurfaceQuad.pool_offset` references it (replaces the whole-output software blit).
+- [ ] `win-host` **GPU compositor** — one textured quad per surface, back-to-front, alpha blended;
+  per-surface textures cached with damage-aware uploads.
+- [ ] Compositor `--gpu-composite` mode — publish a `GpuScene` instead of a pre-composited frame;
+  the software path stays the default/fallback.
+- [ ] GPU effects from per-surface quads — opacity, viewporter/fractional scaling, output
+  transforms, done on the host GPU instead of the WSL1 CPU.
+
+Benefit: offloads compositing from the software-only WSL1 CPU to the Windows GPU and enables
+blending/scaling/effects. It does **not** give Wayland clients their own GPU — that stays a
+WSL2-only capability.
+
 ## 5. How to run (target workflow)
 
 1. On **Windows**: `cargo run -p win-host -- --shm C:\Users\<you>\AppData\Local\Temp\wwc.fb`

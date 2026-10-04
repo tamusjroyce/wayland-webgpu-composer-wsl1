@@ -168,5 +168,8 @@ fn handle_server_message(msg: ServerMessage, shm: &mut Option<Mmap>, gpu: &mut G
                 }
             }
         }
+        // GPU-composited scene path (WebGPU): not yet consumed by the host; the compositor
+        // still publishes a pre-composited frame via FrameReady. See plan.md Phase 7.
+        ServerMessage::GpuScene { .. } => {}
     }
 }

@@ -330,6 +330,40 @@ pub enum ClientMessage {
     Close,
 }
 
+/// One surface to be composited on the host GPU (WebGPU path). Its pixel data lives in the
+/// shared-memory surface pool at `pool_offset` (BGRA, `src_stride` bytes per row, `src_h`
+/// rows). Surfaces in a [`ServerMessage::GpuScene`] are listed back-to-front; `opacity` in
+/// `[0, 1]` scales the surface alpha during blending.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceQuad {
+    /// Byte offset of this surface's pixels within the shared-memory surface pool.
+    pub pool_offset: u64,
+    pub src_w: u32,
+    pub src_h: u32,
+    pub src_stride: u32,
+    pub dst_x: i32,
+    pub dst_y: i32,
+    pub dst_w: u32,
+    pub dst_h: u32,
+    pub opacity: f32,
+}
+
+impl SurfaceQuad {
+    /// Destination rectangle in clip space (NDC) for an `out_w` x `out_h` output, returned as
+    /// `[x0, y0, x1, y1]`. Framebuffer +Y (down) is flipped to clip-space +Y (up), so a quad
+    /// covering the whole output maps to `[-1, 1, 1, -1]`.
+    pub fn clip_rect(&self, out_w: u32, out_h: u32) -> [f32; 4] {
+        let to_x = |px: f32| (px / out_w as f32) * 2.0 - 1.0;
+        let to_y = |px: f32| 1.0 - (px / out_h as f32) * 2.0;
+        [
+            to_x(self.dst_x as f32),
+            to_y(self.dst_y as f32),
+            to_x((self.dst_x + self.dst_w as i32) as f32),
+            to_y((self.dst_y + self.dst_h as i32) as f32),
+        ]
+    }
+}
+
 /// Sent by the compositor to the Windows host.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerMessage {
@@ -344,6 +378,10 @@ pub enum ServerMessage {
     },
     /// A new frame has been published to shared memory.
     FrameReady { seq: u64, width: u32, height: u32 },
+    /// GPU-composite scene (WebGPU path): an ordered back-to-front list of surfaces for the
+    /// host to composite itself. Pixels are referenced in the shared-memory surface pool.
+    /// This is an additive alternative to the pre-composited [`FrameReady`](Self::FrameReady).
+    GpuScene { seq: u64, surfaces: Vec<SurfaceQuad> },
 }
 
 // Message tags.
@@ -355,6 +393,7 @@ const TAG_KEY: u8 = 5;
 const TAG_CLOSE: u8 = 6;
 const TAG_FRAME_CONFIG: u8 = 7;
 const TAG_FRAME_READY: u8 = 8;
+const TAG_GPU_SCENE: u8 = 9;
 
 /// Write a length-prefixed frame: `u32 payload_len` followed by `payload`.
 fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
@@ -495,6 +534,22 @@ impl ServerMessage {
                 put_u32(&mut p, *width);
                 put_u32(&mut p, *height);
             }
+            ServerMessage::GpuScene { seq, surfaces } => {
+                p.push(TAG_GPU_SCENE);
+                put_u64(&mut p, *seq);
+                put_u32(&mut p, surfaces.len() as u32);
+                for s in surfaces {
+                    put_u64(&mut p, s.pool_offset);
+                    put_u32(&mut p, s.src_w);
+                    put_u32(&mut p, s.src_h);
+                    put_u32(&mut p, s.src_stride);
+                    put_u32(&mut p, s.dst_x as u32);
+                    put_u32(&mut p, s.dst_y as u32);
+                    put_u32(&mut p, s.dst_w);
+                    put_u32(&mut p, s.dst_h);
+                    put_f32(&mut p, s.opacity);
+                }
+            }
         }
         write_frame(w, &p)
     }
@@ -519,6 +574,25 @@ impl ServerMessage {
                 width: c.u32()?,
                 height: c.u32()?,
             },
+            TAG_GPU_SCENE => {
+                let seq = c.u64()?;
+                let n = c.u32()? as usize;
+                let mut surfaces = Vec::with_capacity(n);
+                for _ in 0..n {
+                    surfaces.push(SurfaceQuad {
+                        pool_offset: c.u64()?,
+                        src_w: c.u32()?,
+                        src_h: c.u32()?,
+                        src_stride: c.u32()?,
+                        dst_x: c.u32()? as i32,
+                        dst_y: c.u32()? as i32,
+                        dst_w: c.u32()?,
+                        dst_h: c.u32()?,
+                        opacity: c.f32()?,
+                    });
+                }
+                ServerMessage::GpuScene { seq, surfaces }
+            }
             _ => return Err(invalid("unknown ServerMessage tag")),
         })
     }
@@ -553,6 +627,29 @@ mod tests {
     #[test]
     fn magic_spells_wwcf() {
         assert_eq!(&MAGIC.to_le_bytes(), b"WWCF");
+    }
+
+    #[test]
+    fn gpu_scene_roundtrip() {
+        let surfaces = vec![
+            SurfaceQuad { pool_offset: 0, src_w: 10, src_h: 20, src_stride: 40, dst_x: -5, dst_y: 3, dst_w: 10, dst_h: 20, opacity: 1.0 },
+            SurfaceQuad { pool_offset: 800, src_w: 4, src_h: 4, src_stride: 16, dst_x: 100, dst_y: 200, dst_w: 8, dst_h: 8, opacity: 0.5 },
+        ];
+        let msg = ServerMessage::GpuScene { seq: 42, surfaces: surfaces.clone() };
+        let mut buf = Vec::new();
+        msg.write(&mut buf).unwrap();
+        let got = ServerMessage::read(&mut &buf[..]).unwrap();
+        assert_eq!(got, ServerMessage::GpuScene { seq: 42, surfaces });
+    }
+
+    #[test]
+    fn surface_quad_clip_rect_maps_full_output() {
+        let q = SurfaceQuad { pool_offset: 0, src_w: 100, src_h: 100, src_stride: 400, dst_x: 0, dst_y: 0, dst_w: 100, dst_h: 100, opacity: 1.0 };
+        let [x0, y0, x1, y1] = q.clip_rect(100, 100);
+        assert!((x0 - -1.0).abs() < 1e-6);
+        assert!((y0 - 1.0).abs() < 1e-6);
+        assert!((x1 - 1.0).abs() < 1e-6);
+        assert!((y1 - -1.0).abs() < 1e-6);
     }
 
     #[test]
