@@ -1,34 +1,55 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM Launch the compositor (in WSL) and the WebGPU window. Assumes install.cmd has
-REM already installed both halves. Pass a client command to override the demo
-REM desktop:
-REM   run.cmd "gnome-calculator"
+REM Interactive launcher for wayland-webgpu-composer. Asks which WSL distro and
+REM render backend (webgpu or vulkan/ash), ensures both halves are installed and
+REM up to date (install.cmd), then launches the Windows host + a desktop nested
+REM on the compositor. The desktop is auto-detected in the chosen distro.
+REM
+REM   run.cmd [distro] [backend] [desktop]
+REM     distro   WSL distro (asked if omitted)
+REM     backend  webgpu | vulkan (asked if omitted)
+REM     desktop  sway|labwc|weston|cage|kwin|... (chooser if omitted)
+REM
+REM Env: WWC_PORT (default 7900)
 REM ---------------------------------------------------------------------------
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
+set "WSL_UTF8=1"
+set "SELFDIR=%~dp0"
+if not defined WWC_PORT set "WWC_PORT=7900"
 
-set "DISTRO=WWC-WSL1"
-set "DEST=%LOCALAPPDATA%\wayland-webgpu-composer"
-set "CLIENT=weston --use-pixman --width=1280 --height=800"
-if not "%~1"=="" set "CLIENT=%~1"
+where wsl >nul 2>&1 || (echo ERROR: WSL is not installed.& exit /b 1)
 
-REM Compositor shared-framebuffer path: C:\...\fb\desktop.fb -> /mnt/c/.../fb/desktop.fb
-REM (strip drive colon, backslashes -> slashes, lowercase the drive letter).
-if not exist "%DEST%\fb" mkdir "%DEST%\fb"
-set "FB_WIN=%DEST%\fb\desktop.fb"
-set "FB_REST=%FB_WIN:~2%"
-set "FB_REST=%FB_REST:\=/%"
-set "FB_DRV=%FB_WIN:~0,1%"
-for %%L in (a b c d e f g h i j k l m n o p q r s t u v w x y z) do if /i "%FB_DRV%"=="%%L" set "FB_DRV=%%L"
-set "FB_WSL=/mnt/%FB_DRV%%FB_REST%"
+set "DISTRO=%~1"
+set "BACKEND=%~2"
+set "DESKTOP=%~3"
 
-echo Starting compositor...
-start "wwc-compositor" wsl -d %DISTRO% -u root -- bash -lc "pkill -9 -x wsl-compositor 2>/dev/null; mkdir -p /tmp/wwc-desk; XDG_RUNTIME_DIR=/tmp/wwc-desk /usr/local/bin/wsl-compositor --shm '%FB_WSL%' --width 1440 --height 900 -c '%CLIENT%'"
+if "%DISTRO%"=="" (
+  echo Available WSL distros ^(pick a WSL1 one for this project^):
+  wsl -l -v
+  set /p "DISTRO=Which distro? "
+)
+if "%DISTRO%"=="" (echo ERROR: no distro.& exit /b 1)
 
-echo Starting WebGPU window...
-taskkill /im win-host.exe /f >nul 2>&1
-start "" "%DEST%\win-host.exe"
+if "%BACKEND%"=="" (
+  echo.
+  echo Render backend:
+  echo   1^) webgpu  ^(wgpu^)
+  echo   2^) vulkan  ^(ash + gpu-allocator^)
+  set /p "BSEL=Choose [1-2] ^(default 1^): "
+  if "!BSEL!"=="2" (set "BACKEND=vulkan") else (set "BACKEND=webgpu")
+)
 
 echo.
-echo The compositor (console) and the WebGPU window are running.
-exit /b 0
+echo === Ensuring install in %DISTRO% ^(backend %BACKEND%^) ===
+call "%SELFDIR%install.cmd" "%DISTRO%" "%BACKEND%" || (echo ERROR: install failed.& exit /b 1)
+
+echo.
+echo === Starting win-host ^(--backend %BACKEND%^) ===
+taskkill /im win-host.exe /f >nul 2>&1
+start "" "%SELFDIR%target\release\win-host.exe" --host 127.0.0.1:%WWC_PORT% --backend %BACKEND%
+
+echo.
+echo === Launching desktop on %DISTRO% ^(backend %BACKEND%, port %WWC_PORT%^) ===
+for /f "usebackq delims=" %%p in (`wsl -d %DISTRO% wslpath "%SELFDIR%run-desktop.sh"`) do set "RDWSL=%%p"
+wsl -d %DISTRO% -u root -- env WWC_BACKEND=%BACKEND% WWC_PORT=%WWC_PORT% bash "%RDWSL%" %DESKTOP%
+endlocal

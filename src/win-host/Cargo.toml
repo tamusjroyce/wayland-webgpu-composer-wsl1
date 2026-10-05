@@ -23,5 +23,17 @@ memmap2 = "0.9"
 log = "0.4"
 env_logger = "0.11"
 
+# Raw-Vulkan backend (ash + gpu-allocator), compiled only with `--features vulkan`.
+ash = { version = "0.38", optional = true }
+ash-window = { version = "0.13", optional = true }
+gpu-allocator = { version = "0.27", default-features = false, features = ["vulkan"], optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
+[features]
+default = []
+# Enables the second render backend: raw Vulkan via `ash` + `gpu-allocator`. The `--backend
+# vulkan` CLI flag only has an effect when win-host is built with this feature.
+vulkan = ["dep:ash", "dep:ash-window", "dep:gpu-allocator", "dep:raw-window-handle"]
+
 [dev-dependencies]
 tempfile = "3"

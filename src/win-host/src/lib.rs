@@ -3,6 +3,7 @@
 //! ([`main`](../main.rs)) is a thin event-loop wrapper around it.
 
 pub mod args;
+pub mod backend;
 pub mod bridge;
 pub mod gpu;
 pub mod input;

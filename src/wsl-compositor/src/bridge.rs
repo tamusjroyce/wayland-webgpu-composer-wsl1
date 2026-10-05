@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use bridge_protocol::{ClientMessage, FrameLayout, ServerMessage};
+use bridge_protocol::{Backend, ClientMessage, FrameLayout, ServerMessage};
 use smithay::reexports::calloop::channel::Sender;
 
 /// Handle used by the compositor to send [`ServerMessage`]s to the connected host.
@@ -17,12 +17,14 @@ pub struct Bridge {
 
 impl Bridge {
     /// Spawn the TCP server. Binds the first address in `addrs` that is free, then serves on
-    /// it. Incoming [`ClientMessage`]s are forwarded through `ctrl_tx`. Returns the handle
-    /// and the bound address (`None` if every candidate failed to bind).
+    /// it. Incoming [`ClientMessage`]s are forwarded through `ctrl_tx`. The chosen `backend`
+    /// is advertised to the host in the handshake. Returns the handle and the bound address
+    /// (`None` if every candidate failed to bind).
     pub fn spawn(
         addrs: Vec<String>,
         host_path: String,
         layout: FrameLayout,
+        backend: Backend,
         ctrl_tx: Sender<ClientMessage>,
     ) -> (Bridge, Option<String>) {
         let writer: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
@@ -57,6 +59,7 @@ impl Bridge {
                         width: layout.width,
                         height: layout.height,
                         shm_size: layout.total_size(),
+                        backend,
                         host_path: host_path.clone(),
                     };
                     let write_half = match stream.try_clone() {

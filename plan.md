@@ -334,24 +334,223 @@ move *compositing itself* onto the host GPU:
 - [*] Present path on GPU — texture upload + fullscreen-quad sampling + scaling (existing).
 - [*] Protocol foundation — `SurfaceQuad` + `ServerMessage::GpuScene` (back-to-front surface list
   with geometry/opacity), clip-space mapping, encode/decode + unit tests. Additive, non-breaking.
-- [ ] Shared-memory **surface pool** — region where the compositor copies each client `wl_shm`
-  buffer once; `SurfaceQuad.pool_offset` references it (replaces the whole-output software blit).
-- [ ] `win-host` **GPU compositor** — one textured quad per surface, back-to-front, alpha blended;
-  per-surface textures cached with damage-aware uploads.
-- [ ] Compositor `--gpu-composite` mode — publish a `GpuScene` instead of a pre-composited frame;
-  the software path stays the default/fallback.
+
+**Remaining WebGPU work — finish this before starting Phase 8 (the `ash` backend).** Each item
+lists the concrete code steps and how to verify it.
+
+- [-] Shared-memory **surface pool** (`bridge-protocol` + `wsl-compositor`)
+  - [*] `bridge-protocol`: pool layout after the framebuffer slots. `SurfacePool`
+    (`region_count`, `region_stride`, `pool_size`, `pool_region`) with [`POOL_ALIGN`] (4 KiB)
+    regions; per-region `RegionHeader { used, seq, width, height, stride }` (read/write +
+    `region_pixels[_mut]`); and `SharedLayout { frame, pool }` giving file-absolute
+    `pool_base`/`region_file_range` (what `SurfaceQuad.pool_offset` carries).
+  - [*] `bridge-protocol`: `SurfacePool::pool_region(idx) -> Option<(offset, len)>` + unit tests
+    for bounds, 4 KiB alignment, stride round-up, offset round-trips, region-header round-trip,
+    and the composed file layout (36 tests total, green).
+  - [ ] `wsl-compositor`: size the shared file via `SharedLayout`; on commit, copy each mapped
+    client `wl_shm` buffer into a pool region once per frame (BGRA, keep `src_stride`, bump
+    `seq`), tracking a stable surface→region mapping so an unchanged surface keeps its offset.
+  - [ ] Verify: `cargo test -p bridge-protocol` (done, green); dump the pool from `fb-dump` and
+    confirm a known client's pixels appear at the advertised `pool_offset` (pending the live map).
+- [*] `win-host` **consume `GpuScene`** (`main.rs`) — the `ServerMessage::GpuScene` arm now maps
+  the shared pool read-only and CPU-composites the back-to-front quads via
+  `bridge_protocol::composite_scene(out_w, out_h, pool, quads)`, then uploads the result through
+  the normal present path. Backend-agnostic (works for both `wgpu` and `vulkan`); verified by
+  `composite_scene` unit tests (layering, front-overwrite, empty-clear) + `win-host` build.
+- [ ] `win-host` **on-GPU compositor** (`gpu.rs`) — optimization over the CPU composite above:
+  - [ ] Build a per-surface texture cache keyed by `pool_offset`, (re)uploading only when
+    `src_w/src_h` or the region `seq` changed (damage-aware); evict entries absent from the scene.
+  - [ ] Replace the single fullscreen blit with a loop: for each `SurfaceQuad` back-to-front, set
+    a per-quad uniform (`clip_rect()` + `opacity`) and `draw(0..4)` a textured quad.
+  - [ ] Enable alpha blending on the color target (`BlendState::ALPHA_BLENDING`) and multiply
+    sampled alpha by `opacity` in the fragment shader (new `scene.wgsl` or a branch in
+    `shader.wgsl`).
+  - [ ] Verify: drive a synthetic two-surface `GpuScene` and snapshot; overlapping quads blend in
+    the correct back-to-front order.
+- [ ] Compositor `--gpu-composite` mode (`wsl-compositor`)
+  - [ ] Behind a CLI flag, publish a `GpuScene` (pool copies + quad list) each frame instead of the
+    pre-composited whole-output blit; the software path stays the default/fallback.
+  - [ ] Verify: `scripts/protocol-check.sh`-style run with `--gpu-composite` + `win-host`; windows
+    render through the per-surface path with identical pixels to the software path.
 - [ ] GPU effects from per-surface quads — opacity, viewporter/fractional scaling, output
-  transforms, done on the host GPU instead of the WSL1 CPU.
+  transforms, done on the host GPU instead of the WSL1 CPU (fold the viewport src/dst crop and
+  surface scale into the per-quad uniform).
 
 Benefit: offloads compositing from the software-only WSL1 CPU to the Windows GPU and enables
 blending/scaling/effects. It does **not** give Wayland clients their own GPU — that stays a
 WSL2-only capability.
 
+### Phase 8 — Second render backend: `gpu-allocator` + `ash` (raw Vulkan)
+
+**Finish all remaining Phase 7 WebGPU items before starting this phase.** Phase 8 does not
+replace `wgpu`; it adds a *second, selectable* host renderer so the WSL1 Wayland compositor's
+host side has **full, explicit control** over the GPU.
+
+#### 8.0 Why a second backend (rationale)
+
+`wgpu` is a high-level, safe abstraction: it hides `VkDeviceMemory` allocation, descriptor
+pools, image-layout transitions, queue submission and swapchain synchronization. That is ideal
+for a portable present path, but it caps how much the compositor can control memory placement,
+upload strategy, aliasing/tiling, and present timing. A raw-Vulkan backend gives that control:
+
+- **`ash`** — thin, unsafe FFI bindings to the Vulkan API (no abstraction, 1:1 with the C API).
+  We own instance/device creation, swapchain, command buffers, pipelines, synchronization.
+- **`gpu-allocator`** — a sub-allocator for `VkDeviceMemory` (the piece `ash` deliberately does
+  *not* provide). It manages memory types, suballocation, and host-visible vs device-local
+  placement, so we can map the shared surface pool as host-visible staging and keep per-surface
+  images device-local — the "full abstract control" the compositor wants over GPU memory.
+
+Target: the `vulkan` backend reaches **feature parity with the `wgpu` present + GPU-compositor
+path** (whole-framebuffer blit *and* per-surface `GpuScene` compositing), selectable at runtime.
+
+**Status (whole-framebuffer present path implemented).** The `--backend {webgpu|vulkan}`
+parameter is wired through **both** processes and defaults to `webgpu`: `wsl-compositor
+--backend …` advertises the choice in the `FrameConfig` handshake (`bridge_protocol::Backend`),
+and `win-host --backend …` selects the matching renderer (the compositor's value is
+authoritative if they differ). The Vulkan whole-output present is implemented with
+**`vkCmdBlitImage`** (hardware-scaled transfer blit) rather than a graphics pipeline + shaders:
+the whole-framebuffer blit needs no pipeline/descriptors/SPIR-V, which keeps the backend small
+and avoids a host shader-toolchain dependency. A graphics pipeline is only needed for the
+per-surface `GpuScene` compositor (8.9), which is still pending.
+
+**Runtime validation (2026-10-05, both backends, real hardware).** Host: NVIDIA RTX 3060 Laptop
++ Intel Iris Xe (Vulkan 1.3 ICDs, `VK_KHR_win32_surface`). Compositor ran in `WWC-WSL1` (WSL1)
+serving `weston-simple-shm` frames over `127.0.0.1:7901`, shared file on `/mnt/c`.
+- **webgpu**: `win-host --backend webgpu` → `renderer: webgpu (wgpu)` (wgpu Vulkan HAL),
+  connected, handshake `backend=webgpu`, uploaded/presented 800×600 frames, no render errors.
+- **vulkan**: `win-host --backend vulkan` (built `--features vulkan`) → `vulkan adapter: Intel(R)
+  Iris(R) Xe Graphics`, `renderer: vulkan (ash + gpu-allocator)`, connected, handshake
+  `backend=vulkan`; the `ash` instance/surface/device/swapchain + `gpu-allocator` memory + upload
+  (`vkCmdCopyBufferToImage`) + present (`vkCmdBlitImage`) loop ran against the live frame stream
+  with no crashes/errors. Confirms the single `--backend` parameter drives both sides end-to-end.
+
+#### 8.1 Backend abstraction (prerequisite refactor in `win-host`)
+
+- [*] Define a `Renderer` trait capturing what `main.rs`/`bridge.rs` need, matching today's
+  `GpuState`: `window()`, `resize(w,h)`, `window_size()`, `tex_size()`, `upload(w,h,bgra)`,
+  `render()` (returns a backend-agnostic `RenderOutcome`). `render_scene(...)` lands with 8.9.
+- [*] `GpuState` (the `wgpu` renderer) now implements `Renderer`; `backend/mod.rs` adds the
+    `Renderer` trait + `RenderOutcome` + a `create(Backend, window)` factory (falls back to
+    `wgpu` with a warning if Vulkan is unavailable).
+- [*] Added `--backend {webgpu|vulkan}` to `args.rs` (default `webgpu`), threaded into the
+    factory. `cargo build -p win-host` + the existing `wgpu` path unchanged (26 tests pass).
+
+#### 8.2 Dependencies & feature gating
+
+- [*] Added to `win-host/Cargo.toml` behind a `vulkan` cargo feature: `ash = "0.38"`,
+    `ash-window = "0.13"`, `gpu-allocator = "0.27"` (vulkan feature),
+    `raw-window-handle = "0.6"`. `wgpu` stays always-on as the fallback.
+- [*] Shader toolchain decision: **none needed** for the present path — `vkCmdBlitImage` does the
+    scaled copy on the transfer unit, so no GLSL/SPIR-V/`shaderc`. (Revisit for 8.9: the scene
+    compositor will need a textured-quad pipeline; generate SPIR-V via `naga` at runtime to avoid
+    an external toolchain, since the host has no Vulkan SDK/`glslc`.)
+
+#### 8.3 Instance, surface, physical device, queues (`backend/vulkan.rs`)
+
+- [*] Create `VkInstance` via `ash::Entry` with the surface extensions from
+    `ash_window::enumerate_required_extensions`. (Validation layer/debug messenger: deferred to
+    8.10.)
+- [*] Create the `VkSurfaceKHR` from the `winit` window via `ash-window` (rwh 0.6 handles).
+- [*] Enumerate physical devices; pick the first with a graphics **and** present queue family,
+    logging the adapter name. (Discrete-GPU preference: future refinement.)
+- [*] Create the logical `VkDevice` with `VK_KHR_swapchain` + one graphics/present queue; store
+    `Entry`, `Instance`, `Device`, `PhysicalDevice`, queue.
+- [*] Verify: compiles with `--features vulkan`; logs the selected adapter at runtime.
+
+#### 8.4 `gpu-allocator` integration (memory ownership)
+
+- [*] Construct `gpu_allocator::vulkan::Allocator` from the instance/device/physical-device —
+    the single owner of all non-swapchain `VkDeviceMemory`.
+- [*] Helpers `alloc_image` (device-local `GpuOnly`) and `ensure_staging` (host-visible
+    `CpuToGpu`, persistently mapped) allocate via the allocator and bind the handle.
+- [*] Centralized teardown: `free_texture`/`free_staging` return allocations to the allocator,
+    then `Drop` drops the allocator **before** destroying the device (ordered teardown).
+- [ ] Verify with validation enabled — zero leak/teardown-order errors (pending 8.10, needs a
+    Vulkan runtime on the host).
+
+#### 8.5 Swapchain & per-frame sync (`backend/vulkan.rs`)
+
+- [*] Create `VkSwapchainKHR` sized to the window, choosing `B8G8R8A8_UNORM` (non-sRGB, matches
+    the `wgpu` format), `FIFO` present mode, `min_image_count+1` images, with
+    `TRANSFER_DST` image usage (we clear + blit into the swapchain image). No image views /
+    render pass are needed for the blit present.
+- [*] Per-frame objects: `image_available` + `render_finished` semaphores, an `in_flight` fence,
+    a command pool + primary command buffers (frame + upload).
+- [*] `resize(w,h)`: wait idle and recreate the swapchain (`old_swapchain` reuse); acquire/
+    present handle `ERROR_OUT_OF_DATE_KHR`/`SUBOPTIMAL` by reporting `RenderOutcome::Lost` so
+    `main` resizes.
+- [*] Verified on a real GPU (Intel Iris Xe, 2026-10-05): clears + presents live frames without
+    validation/runtime errors.
+
+#### 8.6 Textures & uploads (parity with `GpuState::upload`)
+
+- [*] `alloc_image(w,h)`: device-local `VkImage` (`B8G8R8A8_UNORM`, `TRANSFER_SRC | TRANSFER_DST`
+    so it can be uploaded to and then blitted from), (re)created when the size changes.
+- [*] `upload(w,h,bgra)`: copy into the persistently-mapped host-visible staging buffer, then
+    `vkCmdCopyBufferToImage` with explicit `UNDEFINED→TRANSFER_DST→TRANSFER_SRC` barriers
+    (`bufferRowLength` carries the row stride). No sampler needed (the blit path samples via the
+    transfer unit, not a shader).
+- [*] Verified on a real GPU (2026-10-05): the whole-framebuffer upload path ran against live
+    `weston-simple-shm` frames with no errors (pixel-diff vs `wgpu` snapshot still TODO in 8.10).
+
+#### 8.7 Pipelines & descriptors (`backend/vulkan.rs`) — deferred to the scene compositor
+
+Not required for the whole-framebuffer present path (which uses `vkCmdBlitImage`). These land
+with 8.9:
+- [ ] **Scene pipeline** — a textured-quad pipeline with `ALPHA_BLENDING`; per-quad data
+    (`clip_rect()` corners + `opacity`) via push constants; the per-surface image bound via a
+    descriptor set. Generate SPIR-V via `naga` at runtime (no host toolchain).
+- [ ] Descriptor infrastructure: set layout (sampled image + sampler), descriptor pool, and
+    per-texture descriptor sets.
+
+#### 8.8 Whole-framebuffer present path (parity with `GpuState::render`)
+
+- [*] Acquire next image, wait/reset the in-flight fence, record: barrier swapchain image to
+    `TRANSFER_DST`, `vkCmdClearColorImage` to `(0.02,0.02,0.02,1)`, `vkCmdBlitImage` the
+    uploaded texture into the aspect-fit rect (`LINEAR` filter), barrier to `PRESENT_SRC`,
+    submit with acquire/submit semaphores, present. Aspect-fit math (`aspect_fit`) unit-tested.
+- [*] Verified on a real GPU (2026-10-05): the acquire→clear→blit→present loop ran crash-free
+    against live frames; side-by-side pixel-diff vs the `wgpu` blit still TODO (8.10).
+
+#### 8.9 GPU-scene compositor (parity with Phase 7 `render_scene`)
+
+- [ ] Map the shared **surface pool** read-only; maintain a per-`pool_offset` image cache with
+    damage-aware re-upload and eviction (same policy as the `wgpu` compositor).
+- [ ] `render_scene(pool, quads, out)`: for each `SurfaceQuad` back-to-front, draw a textured
+    quad with `ALPHA_BLENDING` (needs the 8.7 pipeline). Add `render_scene` to the `Renderer`
+    trait + both backends once the surface pool exists.
+- [ ] Verify: synthetic two-surface `GpuScene` blends identically to the `wgpu` compositor;
+    `--backend vulkan --gpu-composite` matches the software path pixel-for-pixel.
+
+#### 8.10 Validation, testing & teardown
+
+- [*] Pure helpers unit-tested without a device (`aspect_fit` letterbox/pillarbox/identity);
+    Vulkan object creation/submission stays out of unit tests (needs a real device, like
+    `gpu.rs`) — mirrors the §6 coverage-exclusion policy.
+- [-] Run with `VK_LAYER_KHRONOS_validation` in debug and fix all errors/leaks; confirm clean
+    teardown order (texture/staging via allocator → allocator → sync → pool → swapchain →
+    device → surface → instance). Ran crash-free on real hardware (Intel Iris Xe, 2026-10-05)
+    on the default (no-layer) path; an explicit validation-layer pass + leak check is still TODO.
+- [ ] Add a `backend` comparison note: capture `wgpu` vs `vulkan` snapshots and diff.
+
+#### 8.11 Docs & run integration
+
+- [*] Documented `--backend vulkan` in §5 (both sides share one parameter; host-side only; needs
+    a Vulkan ICD on Windows).
+- [ ] Add the same note to `README.md`.
+- [*] WSL1-first framing reconfirmed: this backend accelerates the **host** present/compositing
+    path; it does **not** add client GPU to WSL1 and is **not** a reason to move to WSL2.
+
 ## 5. How to run (target workflow)
 
 1. On **Windows**: `cargo run -p win-host -- --shm C:\Users\<you>\AppData\Local\Temp\wwc.fb`
+   - [*] Add `--backend vulkan` to use the raw-Vulkan (`ash` + `gpu-allocator`) host renderer
+     instead of the default `wgpu` one (requires building with `--features vulkan` and a Vulkan
+     ICD on Windows). The same `--backend` is a single logical parameter shared by both sides.
 2. In **WSL1**: `cargo run` inside `src/wsl-compositor` with
    `--shm /mnt/c/Users/<you>/AppData/Local/Temp/wwc.fb --host 127.0.0.1:8335`
+   - Pass `--backend vulkan` here too; the compositor advertises it in the handshake and the
+     host adopts it (the compositor's choice is authoritative). Defaults to `webgpu`.
 3. Point Wayland clients at the compositor: `WAYLAND_DISPLAY=wayland-1 weston-terminal`
 
 ## 6. Testing & coverage

@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fs::OpenOptions;
 use std::time::Duration;
 
-use bridge_protocol::{FrameLayout, SharedFramebuffer};
+use bridge_protocol::{Backend, FrameLayout, SharedFramebuffer};
 use memmap2::MmapMut;
 use smithay::reexports::calloop::channel::{channel, Event as ChannelEvent};
 use smithay::reexports::calloop::EventLoop;
@@ -39,6 +39,9 @@ struct Args {
     width: u32,
     height: u32,
     command: Option<String>,
+    /// Render backend advertised to the host in the handshake. Defaults to [`Backend::Webgpu`].
+    /// A single `--backend` on either side selects the renderer for both processes.
+    backend: Backend,
 }
 
 fn parse_args() -> Args {
@@ -48,13 +51,17 @@ fn parse_args() -> Args {
     let mut width = 1280u32;
     let mut height = 720u32;
     let mut command = None;
+    let mut backend = Backend::Webgpu;
 
     let usage = "wsl-compositor [--shm <wsl-path>] [--host-path <windows-path>] \
-         [--listen <ip:port>] [--connection-type tcp] [--width N] [--height N] [-c <client-cmd>]\n\
+         [--listen <ip:port>] [--connection-type tcp] [--backend webgpu|vulkan] \
+         [--width N] [--height N] [-c <client-cmd>]\n\
          \n\
          --listen           control channel address. If omitted, bind 127.0.0.1 starting at\n\
          \u{20}                  port 8335 and use the first free port.\n\
-         --connection-type  transport to use. Only 'tcp' is supported (the default).";
+         --connection-type  transport to use. Only 'tcp' is supported (the default).\n\
+         --backend          renderer advertised to the host: 'webgpu' (default) or 'vulkan'\n\
+         \u{20}                  (ash + gpu-allocator). Selects the renderer on both sides.";
 
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -66,6 +73,13 @@ fn parse_args() -> Args {
                 Some("tcp") => {}
                 // Any other (or missing) value is unsupported for now: show help and exit.
                 _ => {
+                    println!("{usage}");
+                    std::process::exit(0);
+                }
+            },
+            "--backend" => match it.next().as_deref().and_then(Backend::parse) {
+                Some(b) => backend = b,
+                None => {
                     println!("{usage}");
                     std::process::exit(0);
                 }
@@ -91,6 +105,7 @@ fn parse_args() -> Args {
         width,
         height,
         command,
+        backend,
     }
 }
 
@@ -122,6 +137,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.shm_path,
         args.host_path
     );
+    tracing::info!("render backend: {} (advertised to host in handshake)", args.backend.name());
 
     let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
@@ -136,6 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         listen_addrs,
         args.host_path.clone(),
         layout,
+        args.backend,
         ctrl_tx,
     );
 

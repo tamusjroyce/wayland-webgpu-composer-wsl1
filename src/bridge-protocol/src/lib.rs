@@ -68,6 +68,55 @@ impl PixelFormat {
     }
 }
 
+/// Host render backend selected on the command line. This is a single logical parameter that
+/// is threaded through **both** sides: the compositor (`wsl-compositor --backend …`) advertises
+/// its choice in the [`ServerMessage::FrameConfig`] handshake, and the Windows host
+/// (`win-host --backend …`) picks the matching renderer. Defaults to [`Backend::Webgpu`].
+///
+/// - [`Backend::Webgpu`] — the portable `wgpu` renderer (default).
+/// - [`Backend::Vulkan`] — the raw-Vulkan renderer (`ash` + `gpu-allocator`), which gives the
+///   compositor full, explicit control over GPU memory and the present path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Backend {
+    #[default]
+    Webgpu = 0,
+    Vulkan = 1,
+}
+
+impl Backend {
+    /// Map the wire byte to a backend. Unknown values fall back to the default ([`Backend::Webgpu`]).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Backend::Vulkan,
+            _ => Backend::Webgpu,
+        }
+    }
+
+    /// The wire byte for this backend.
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Parse a CLI value (`webgpu`/`wgpu` or `vulkan`/`ash`), case-insensitively. Returns
+    /// `None` for an unrecognized value so callers can show usage.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "webgpu" | "wgpu" => Some(Backend::Webgpu),
+            "vulkan" | "ash" | "gpu-allocator" => Some(Backend::Vulkan),
+            _ => None,
+        }
+    }
+
+    /// Lowercase name for logs/usage.
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Webgpu => "webgpu",
+            Backend::Vulkan => "vulkan",
+        }
+    }
+}
+
 /// Convert a `/mnt/<drive>/a/b` WSL path into a `DRIVE:\a\b` Windows path. Returns the input
 /// unchanged if it does not look like a `/mnt/<drive>/` path. This lets the WSL1 compositor
 /// tell the Windows host where to open the shared framebuffer file.
@@ -123,6 +172,166 @@ impl FrameLayout {
     pub fn slot_offset(&self, slot: u32) -> usize {
         HEADER_SIZE + (self.slot_bytes() * slot as u64) as usize
     }
+}
+
+/// Alignment of each surface-pool region, in bytes. Regions start on this boundary so a host
+/// GPU can upload each one without sub-row copy fixups.
+pub const POOL_ALIGN: u64 = 4096;
+
+/// Geometry of the shared-memory **surface pool** used by the GPU-composite path (plan.md
+/// Phase 7/8). The pool is a flat run of `region_count` equal-sized regions; the compositor
+/// copies each client `wl_shm` buffer into one region per frame and references it from a
+/// [`SurfaceQuad::pool_offset`]. Regions are [`POOL_ALIGN`]-aligned.
+///
+/// This type is pure layout math (no I/O), so it unit-tests on any platform. The live mapping
+/// (appending the pool after the framebuffer slots in the shared file) is wired separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfacePool {
+    region_count: u32,
+    region_stride: u64,
+}
+
+impl SurfacePool {
+    /// Build a pool of `region_count` regions, each large enough for `max_region_bytes`,
+    /// rounded up to [`POOL_ALIGN`]. A `region_count` of 0 yields an empty pool.
+    pub fn new(region_count: u32, max_region_bytes: u64) -> Self {
+        SurfacePool {
+            region_count,
+            region_stride: align_up(max_region_bytes, POOL_ALIGN),
+        }
+    }
+
+    /// Number of regions in the pool.
+    pub fn region_count(&self) -> u32 {
+        self.region_count
+    }
+
+    /// Bytes per region (always a multiple of [`POOL_ALIGN`]).
+    pub fn region_stride(&self) -> u64 {
+        self.region_stride
+    }
+
+    /// Total bytes spanned by the pool: `region_stride * region_count`.
+    pub fn pool_size(&self) -> u64 {
+        self.region_stride * self.region_count as u64
+    }
+
+    /// `(offset, len)` of region `idx` relative to the start of the pool, or `None` if `idx`
+    /// is out of range. `offset` is [`POOL_ALIGN`]-aligned.
+    pub fn pool_region(&self, idx: u32) -> Option<(u64, u64)> {
+        if idx >= self.region_count {
+            return None;
+        }
+        Some((idx as u64 * self.region_stride, self.region_stride))
+    }
+}
+
+/// Bytes reserved at the start of each pool region for its [`RegionHeader`]. Pixel data begins
+/// at this offset within the region. Kept a power of two so pixel rows stay naturally aligned.
+pub const POOL_REGION_HEADER: usize = 32;
+
+// --- Region header field offsets (little-endian, within a region) ---
+const RH_USED: usize = 0; // u32: 0 = free, 1 = holds a live surface this frame
+const RH_SEQ: usize = 4; // u32: bumped whenever the pixels change (host damage key)
+const RH_WIDTH: usize = 8; // u32
+const RH_HEIGHT: usize = 12; // u32
+const RH_STRIDE: usize = 16; // u32: bytes per row of the pixel payload
+
+/// Per-region bookkeeping the compositor writes and the host reads. `used`/`seq` drive the
+/// host's damage-aware per-surface texture cache; `width`/`height`/`stride` describe the BGRA
+/// payload that follows the header in the region.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegionHeader {
+    pub used: bool,
+    pub seq: u32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+}
+
+impl RegionHeader {
+    /// Write this header into the first [`POOL_REGION_HEADER`] bytes of `region`. No-op if the
+    /// slice is too short.
+    pub fn write(&self, region: &mut [u8]) {
+        if region.len() < POOL_REGION_HEADER {
+            return;
+        }
+        write_u32(region, RH_USED, self.used as u32);
+        write_u32(region, RH_SEQ, self.seq);
+        write_u32(region, RH_WIDTH, self.width);
+        write_u32(region, RH_HEIGHT, self.height);
+        write_u32(region, RH_STRIDE, self.stride);
+    }
+
+    /// Read a header from the first [`POOL_REGION_HEADER`] bytes of `region`, or `None` if the
+    /// slice is too short.
+    pub fn read(region: &[u8]) -> Option<Self> {
+        if region.len() < POOL_REGION_HEADER {
+            return None;
+        }
+        Some(RegionHeader {
+            used: read_u32(region, RH_USED) != 0,
+            seq: read_u32(region, RH_SEQ),
+            width: read_u32(region, RH_WIDTH),
+            height: read_u32(region, RH_HEIGHT),
+            stride: read_u32(region, RH_STRIDE),
+        })
+    }
+
+    /// Bytes of BGRA payload this header describes (`stride * height`).
+    pub fn payload_len(&self) -> usize {
+        self.stride as usize * self.height as usize
+    }
+}
+
+/// Borrow the BGRA pixel payload of a region (the bytes after [`POOL_REGION_HEADER`]), or
+/// `None` if the region is too short to hold the header.
+pub fn region_pixels(region: &[u8]) -> Option<&[u8]> {
+    region.get(POOL_REGION_HEADER..)
+}
+
+/// Mutably borrow the BGRA pixel payload of a region (for the compositor to fill).
+pub fn region_pixels_mut(region: &mut [u8]) -> Option<&mut [u8]> {
+    region.get_mut(POOL_REGION_HEADER..)
+}
+
+/// Full shared-file layout: the double-buffered framebuffer slots (the pre-composited path),
+/// immediately followed by the optional [`SurfacePool`] (the GPU-composite path). Both sides
+/// size and map the file from this so `pool_offset` references are file-absolute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SharedLayout {
+    pub frame: FrameLayout,
+    pub pool: SurfacePool,
+}
+
+impl SharedLayout {
+    pub fn new(frame: FrameLayout, pool: SurfacePool) -> Self {
+        SharedLayout { frame, pool }
+    }
+
+    /// File-absolute byte offset where the surface pool begins (right after the framebuffer).
+    pub fn pool_base(&self) -> u64 {
+        self.frame.total_size()
+    }
+
+    /// Total shared-file size: framebuffer + pool.
+    pub fn total_size(&self) -> u64 {
+        self.pool_base() + self.pool.pool_size()
+    }
+
+    /// File-absolute `(offset, len)` of pool region `idx`, or `None` if out of range. The
+    /// `offset` is what a [`SurfaceQuad::pool_offset`] carries.
+    pub fn region_file_range(&self, idx: u32) -> Option<(u64, u64)> {
+        let (rel, len) = self.pool.pool_region(idx)?;
+        Some((self.pool_base() + rel, len))
+    }
+}
+
+/// Round `v` up to the next multiple of `align` (which must be non-zero).
+#[inline]
+fn align_up(v: u64, align: u64) -> u64 {
+    debug_assert!(align != 0);
+    v.div_ceil(align) * align
 }
 
 #[inline]
@@ -310,6 +519,32 @@ pub fn blit_bgra(
     }
 }
 
+/// CPU-composite a back-to-front list of [`SurfaceQuad`]s into a freshly allocated
+/// `out_w * out_h` BGRA framebuffer. Each quad's pixels are read from `pool` starting at its
+/// `pool_offset` (file-absolute when `pool` is the whole shared mapping). This is the
+/// backend-agnostic consumer of a [`ServerMessage::GpuScene`]: the host composites on the CPU
+/// then uploads the result through the normal present path, so it works identically for the
+/// `wgpu` and `vulkan` renderers. Opaque verbatim copy (no blending); `opacity` is honored
+/// only by the future on-GPU per-quad path.
+pub fn composite_scene(out_w: u32, out_h: u32, pool: &[u8], quads: &[SurfaceQuad]) -> Vec<u8> {
+    let mut out = vec![0u8; out_w as usize * out_h as usize * 4];
+    for q in quads {
+        blit_bgra(
+            &mut out,
+            out_w,
+            out_h,
+            pool,
+            q.pool_offset as usize,
+            q.src_w,
+            q.src_h,
+            q.src_stride,
+            q.dst_x,
+            q.dst_y,
+        );
+    }
+    out
+}
+
 // =====================================================================================
 // Control channel messages
 // =====================================================================================
@@ -373,6 +608,9 @@ pub enum ServerMessage {
         height: u32,
         /// Total size of the shared file in bytes.
         shm_size: u64,
+        /// Render backend the compositor was launched with. The host picks the matching
+        /// renderer so a single `--backend` parameter drives both sides.
+        backend: Backend,
         /// Path to the shared file **as the host (Windows) should open it**.
         host_path: String,
     },
@@ -519,11 +757,12 @@ impl ServerMessage {
     pub fn write<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut p = Vec::with_capacity(32);
         match self {
-            ServerMessage::FrameConfig { width, height, shm_size, host_path } => {
+            ServerMessage::FrameConfig { width, height, shm_size, backend, host_path } => {
                 p.push(TAG_FRAME_CONFIG);
                 put_u32(&mut p, *width);
                 put_u32(&mut p, *height);
                 put_u64(&mut p, *shm_size);
+                p.push(backend.as_u8());
                 let bytes = host_path.as_bytes();
                 put_u32(&mut p, bytes.len() as u32);
                 p.extend_from_slice(bytes);
@@ -563,11 +802,12 @@ impl ServerMessage {
                 let width = c.u32()?;
                 let height = c.u32()?;
                 let shm_size = c.u64()?;
+                let backend = Backend::from_u8(c.u8()?);
                 let len = c.u32()? as usize;
                 let path = c.take(len)?;
                 let host_path = String::from_utf8(path.to_vec())
                     .map_err(|_| invalid("host_path not UTF-8"))?;
-                ServerMessage::FrameConfig { width, height, shm_size, host_path }
+                ServerMessage::FrameConfig { width, height, shm_size, backend, host_path }
             }
             TAG_FRAME_READY => ServerMessage::FrameReady {
                 seq: c.u64()?,
@@ -615,6 +855,127 @@ mod tests {
         let l = FrameLayout::new(8, 8);
         assert_eq!(l.slot_offset(0), HEADER_SIZE);
         assert_eq!(l.slot_offset(1), HEADER_SIZE + l.slot_bytes() as usize);
+    }
+
+    #[test]
+    fn surface_pool_regions_are_aligned_and_distinct() {
+        // 10 regions big enough for a 300-byte surface -> each rounded up to POOL_ALIGN.
+        let pool = SurfacePool::new(10, 300);
+        assert_eq!(pool.region_count(), 10);
+        assert_eq!(pool.region_stride(), POOL_ALIGN);
+        assert_eq!(pool.pool_size(), POOL_ALIGN * 10);
+        for i in 0..10 {
+            let (off, len) = pool.pool_region(i).unwrap();
+            assert_eq!(off, i as u64 * POOL_ALIGN, "region {i} offset");
+            assert_eq!(len, POOL_ALIGN);
+            assert_eq!(off % POOL_ALIGN, 0, "region {i} alignment");
+        }
+    }
+
+    #[test]
+    fn surface_pool_rounds_region_stride_up() {
+        // A region needing 5000 bytes rounds up to 2 * POOL_ALIGN (8192).
+        let pool = SurfacePool::new(3, 5000);
+        assert_eq!(pool.region_stride(), 2 * POOL_ALIGN);
+        assert_eq!(pool.pool_region(2), Some((2 * 2 * POOL_ALIGN, 2 * POOL_ALIGN)));
+    }
+
+    #[test]
+    fn surface_pool_out_of_range_is_none() {
+        let pool = SurfacePool::new(4, 100);
+        assert!(pool.pool_region(3).is_some());
+        assert_eq!(pool.pool_region(4), None);
+        assert_eq!(pool.pool_region(99), None);
+    }
+
+    #[test]
+    fn surface_pool_empty_has_zero_size() {
+        let pool = SurfacePool::new(0, 4096);
+        assert_eq!(pool.pool_size(), 0);
+        assert_eq!(pool.pool_region(0), None);
+    }
+
+    #[test]
+    fn surface_pool_exact_multiple_is_not_overpadded() {
+        // Exactly POOL_ALIGN bytes stays one region wide (no extra page).
+        let pool = SurfacePool::new(1, POOL_ALIGN);
+        assert_eq!(pool.region_stride(), POOL_ALIGN);
+    }
+
+    #[test]
+    fn region_header_roundtrips() {
+        let mut region = vec![0u8; POOL_REGION_HEADER + 64];
+        let h = RegionHeader { used: true, seq: 7, width: 4, height: 4, stride: 16 };
+        h.write(&mut region);
+        assert_eq!(RegionHeader::read(&region), Some(h));
+        assert_eq!(h.payload_len(), 16 * 4);
+    }
+
+    #[test]
+    fn region_header_too_short_is_none() {
+        let short = vec![0u8; POOL_REGION_HEADER - 1];
+        assert_eq!(RegionHeader::read(&short), None);
+        // write is a no-op on a short slice (must not panic).
+        let mut short = short;
+        RegionHeader::default().write(&mut short);
+    }
+
+    #[test]
+    fn region_pixels_follow_header() {
+        let mut region = vec![0u8; POOL_REGION_HEADER + 8];
+        region_pixels_mut(&mut region).unwrap()[0] = 0xAB;
+        assert_eq!(region[POOL_REGION_HEADER], 0xAB);
+        assert_eq!(region_pixels(&region).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn composite_scene_layers_back_to_front() {
+        // 2x1 output. Two 1x1 surfaces at x=0 and x=1, pixels packed in a fake pool.
+        let mut pool = vec![0u8; 8];
+        pool[0..4].copy_from_slice(&[1, 2, 3, 4]);
+        pool[4..8].copy_from_slice(&[9, 8, 7, 6]);
+        let quads = vec![
+            SurfaceQuad { pool_offset: 0, src_w: 1, src_h: 1, src_stride: 4, dst_x: 0, dst_y: 0, dst_w: 1, dst_h: 1, opacity: 1.0 },
+            SurfaceQuad { pool_offset: 4, src_w: 1, src_h: 1, src_stride: 4, dst_x: 1, dst_y: 0, dst_w: 1, dst_h: 1, opacity: 1.0 },
+        ];
+        let out = composite_scene(2, 1, &pool, &quads);
+        assert_eq!(&out[0..4], &[1, 2, 3, 4]);
+        assert_eq!(&out[4..8], &[9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn composite_scene_front_quad_overwrites() {
+        // Both target the same pixel; the later (front) quad wins.
+        let mut pool = vec![0u8; 8];
+        pool[0..4].copy_from_slice(&[1, 1, 1, 1]);
+        pool[4..8].copy_from_slice(&[2, 2, 2, 2]);
+        let quads = vec![
+            SurfaceQuad { pool_offset: 0, src_w: 1, src_h: 1, src_stride: 4, dst_x: 0, dst_y: 0, dst_w: 1, dst_h: 1, opacity: 1.0 },
+            SurfaceQuad { pool_offset: 4, src_w: 1, src_h: 1, src_stride: 4, dst_x: 0, dst_y: 0, dst_w: 1, dst_h: 1, opacity: 1.0 },
+        ];
+        let out = composite_scene(1, 1, &pool, &quads);
+        assert_eq!(&out[0..4], &[2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn composite_scene_empty_is_cleared() {
+        assert_eq!(composite_scene(2, 2, &[], &[]), vec![0u8; 2 * 2 * 4]);
+    }
+
+    #[test]
+    fn shared_layout_places_pool_after_framebuffer() {
+        let frame = FrameLayout::new(16, 16);
+        let pool = SurfacePool::new(4, 1000);
+        let layout = SharedLayout::new(frame, pool);
+        assert_eq!(layout.pool_base(), frame.total_size());
+        assert_eq!(layout.total_size(), frame.total_size() + pool.pool_size());
+        // Region 0 starts exactly at the pool base; region 1 one stride later.
+        assert_eq!(layout.region_file_range(0), Some((frame.total_size(), POOL_ALIGN)));
+        assert_eq!(
+            layout.region_file_range(1),
+            Some((frame.total_size() + POOL_ALIGN, POOL_ALIGN))
+        );
+        assert_eq!(layout.region_file_range(4), None);
     }
 
     #[test]
@@ -762,7 +1123,15 @@ mod tests {
                 width: 640,
                 height: 480,
                 shm_size: 12345,
+                backend: Backend::Webgpu,
                 host_path: r"C:\Temp\wwc.fb".to_string(),
+            },
+            ServerMessage::FrameConfig {
+                width: 800,
+                height: 600,
+                shm_size: 999,
+                backend: Backend::Vulkan,
+                host_path: r"C:\Temp\v.fb".to_string(),
             },
             ServerMessage::FrameReady { seq: 42, width: 640, height: 480 },
         ];
@@ -772,6 +1141,22 @@ mod tests {
             let got = ServerMessage::read(&mut &buf[..]).unwrap();
             assert_eq!(m, got);
         }
+    }
+
+    #[test]
+    fn backend_parse_and_wire_roundtrip() {
+        assert_eq!(Backend::default(), Backend::Webgpu);
+        assert_eq!(Backend::parse("webgpu"), Some(Backend::Webgpu));
+        assert_eq!(Backend::parse("WGPU"), Some(Backend::Webgpu));
+        assert_eq!(Backend::parse("vulkan"), Some(Backend::Vulkan));
+        assert_eq!(Backend::parse("ash"), Some(Backend::Vulkan));
+        assert_eq!(Backend::parse("nope"), None);
+        assert_eq!(Backend::from_u8(Backend::Webgpu.as_u8()), Backend::Webgpu);
+        assert_eq!(Backend::from_u8(Backend::Vulkan.as_u8()), Backend::Vulkan);
+        // Unknown wire bytes fall back to the default.
+        assert_eq!(Backend::from_u8(200), Backend::Webgpu);
+        assert_eq!(Backend::Webgpu.name(), "webgpu");
+        assert_eq!(Backend::Vulkan.name(), "vulkan");
     }
 
     #[test]
@@ -820,6 +1205,7 @@ mod tests {
         p.extend_from_slice(&1u32.to_le_bytes()); // width
         p.extend_from_slice(&1u32.to_le_bytes()); // height
         p.extend_from_slice(&1u64.to_le_bytes()); // shm_size
+        p.push(0u8); // backend = webgpu
         p.extend_from_slice(&2u32.to_le_bytes()); // path len
         p.extend_from_slice(&[0xff, 0xfe]); // invalid utf-8
         let mut buf = Vec::new();

@@ -12,7 +12,7 @@
 # Then on Windows:
 #   win-host --host 127.0.0.1:7900      # or: cargo run -p win-host -- --host 127.0.0.1:7900
 #
-# Env overrides: WWC_PORT WWC_WIDTH WWC_HEIGHT WWC_FB WWC_BIN
+# Env overrides: WWC_PORT WWC_WIDTH WWC_HEIGHT WWC_FB WWC_BIN WWC_BACKEND
 # ---------------------------------------------------------------------------
 set -u
 
@@ -21,6 +21,8 @@ W="${WWC_WIDTH:-1280}"
 H="${WWC_HEIGHT:-800}"
 FB="${WWC_FB:-/mnt/c/projects/tamus/wayland-webgpu-composer/target/desktop.fb}"
 WWC="${WWC_BIN:-/usr/local/bin/wsl-compositor}"
+# Render backend advertised to the Windows host: webgpu (default) or vulkan.
+BACKEND="${WWC_BACKEND:-webgpu}"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/wwc-xrd}"
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
@@ -201,6 +203,6 @@ for p in sway labwc weston cage kwin_wayland wayfire waybar swaybg weston-termin
 done
 sleep 1
 
-echo "Launching '$NAME' on WWC (${W}x${H}, port $PORT)."
-echo "On Windows, view it with:  win-host --host 127.0.0.1:$PORT"
-exec "$WWC" --shm "$FB" --listen "127.0.0.1:$PORT" --width "$W" --height "$H" -c "$CMD"
+echo "Launching '$NAME' on WWC (${W}x${H}, port $PORT, backend $BACKEND)."
+echo "On Windows, view it with:  win-host --host 127.0.0.1:$PORT --backend $BACKEND"
+exec "$WWC" --shm "$FB" --listen "127.0.0.1:$PORT" --width "$W" --height "$H" --backend "$BACKEND" -c "$CMD"

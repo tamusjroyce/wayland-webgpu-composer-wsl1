@@ -5,7 +5,7 @@
 //! Window input and resize events are forwarded to the compositor over a `127.0.0.1`
 //! control channel. All reusable logic lives in the `win_host` library crate.
 
-use bridge_protocol::{ClientMessage, ServerMessage};
+use bridge_protocol::{Backend, ClientMessage, ServerMessage};
 use memmap2::Mmap;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Event, MouseScrollDelta, WindowEvent};
@@ -13,7 +13,7 @@ use winit::event_loop::EventLoopBuilder;
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, WindowBuilder};
 
-use win_host::gpu::GpuState;
+use win_host::backend::{self, RenderOutcome, Renderer};
 use win_host::{args, bridge, input, shared, UserEvent};
 
 fn main() {
@@ -32,9 +32,16 @@ fn main() {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event()
         .build()
         .expect("create event loop");
+    // Title reflects the actual host renderer so it is clear which backend is live.
+    let backend_label = match parsed.backend {
+        Backend::Webgpu => "WebGPU (wgpu)",
+        Backend::Vulkan => "Vulkan (ash + gpu-allocator)",
+    };
     let window = std::sync::Arc::new(
         WindowBuilder::new()
-            .with_title("WSL1 Wayland → WebGPU  (F11 fullscreen · F10 minimize)")
+            .with_title(format!(
+                "WSL1 Wayland → {backend_label}  (F11 fullscreen · F10 minimize)"
+            ))
             .with_inner_size(LogicalSize::new(1280.0, 720.0))
             .with_decorations(true)
             .with_resizable(true)
@@ -42,12 +49,17 @@ fn main() {
             .expect("create window"),
     );
 
-    let mut gpu = GpuState::new(window.clone());
+    let mut gpu: Box<dyn Renderer> = backend::create(parsed.backend, window.clone());
 
     let proxy = event_loop.create_proxy();
     let tx = bridge::spawn(args::candidate_addrs(&parsed.host), proxy);
 
     let mut shm: Option<Mmap> = None;
+    // The backend actually in use. Starts from `--backend`; the compositor handshake may
+    // override it so a single parameter on either side stays consistent.
+    let mut active_backend = parsed.backend;
+    // Output framebuffer size from the handshake, needed to size a GpuScene composite.
+    let mut fb_size = (0u32, 0u32);
     // Host-side window state (F11 toggles borderless fullscreen).
     let mut fullscreen = false;
 
@@ -56,7 +68,14 @@ fn main() {
             elwt.set_control_flow(winit::event_loop::ControlFlow::Wait);
             match event {
                 Event::UserEvent(UserEvent::Server(msg)) => {
-                    handle_server_message(msg, &mut shm, &mut gpu);
+                    handle_server_message(
+                        msg,
+                        &mut shm,
+                        gpu.as_mut(),
+                        &mut active_backend,
+                        parsed.backend,
+                        &mut fb_size,
+                    );
                 }
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => {
@@ -72,13 +91,12 @@ fn main() {
                         gpu.window().request_redraw();
                     }
                     WindowEvent::RedrawRequested => match gpu.render() {
-                        Ok(()) => {}
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        RenderOutcome::Presented | RenderOutcome::Error => {}
+                        RenderOutcome::Lost => {
                             let (w, h) = gpu.window_size();
                             gpu.resize(w, h);
                         }
-                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                        Err(e) => log::warn!("render error: {e:?}"),
+                        RenderOutcome::OutOfMemory => elwt.exit(),
                     },
                     WindowEvent::CursorMoved { position, .. } => {
                         if let Some((x, y)) =
@@ -141,15 +159,38 @@ fn main() {
         .expect("event loop");
 }
 
-fn handle_server_message(msg: ServerMessage, shm: &mut Option<Mmap>, gpu: &mut GpuState) {
+fn handle_server_message(
+    msg: ServerMessage,
+    shm: &mut Option<Mmap>,
+    gpu: &mut dyn Renderer,
+    active_backend: &mut Backend,
+    requested_backend: Backend,
+    fb_size: &mut (u32, u32),
+) {
     match msg {
         ServerMessage::FrameConfig {
             width,
             height,
             shm_size,
+            backend,
             host_path,
         } => {
-            log::info!("frame config: {width}x{height}, {shm_size} bytes, path={host_path}");
+            log::info!(
+                "frame config: {width}x{height}, {shm_size} bytes, backend={}, path={host_path}",
+                backend.name()
+            );
+            *fb_size = (width, height);
+            if backend != requested_backend {
+                log::warn!(
+                    "compositor advertised backend '{}' but host was launched with '{}'; \
+                     the compositor's choice is authoritative. Restart win-host with \
+                     --backend {} for a matching host renderer.",
+                    backend.name(),
+                    requested_backend.name(),
+                    backend.name()
+                );
+            }
+            *active_backend = backend;
             match shared::open_shared(&host_path, shm_size) {
                 Some(map) => *shm = Some(map),
                 None => log::error!("failed to map shared framebuffer at {host_path}"),
@@ -168,8 +209,19 @@ fn handle_server_message(msg: ServerMessage, shm: &mut Option<Mmap>, gpu: &mut G
                 }
             }
         }
-        // GPU-composited scene path (WebGPU): not yet consumed by the host; the compositor
-        // still publishes a pre-composited frame via FrameReady. See plan.md Phase 7.
-        ServerMessage::GpuScene { .. } => {}
+        // GPU-composite scene path: CPU-composite the pool quads (back-to-front) into a frame
+        // and upload it through the normal present path. Backend-agnostic (wgpu or vulkan);
+        // the on-GPU per-quad path is a later optimization (plan.md Phase 7/8).
+        ServerMessage::GpuScene { seq: _, surfaces } => {
+            let (w, h) = *fb_size;
+            if w == 0 || h == 0 {
+                return;
+            }
+            if let Some(map) = shm.as_ref() {
+                let pixels = bridge_protocol::composite_scene(w, h, &map[..], &surfaces);
+                gpu.upload(w, h, &pixels);
+                gpu.window().request_redraw();
+            }
+        }
     }
 }

@@ -369,3 +369,33 @@ impl GpuState {
         Ok(())
     }
 }
+
+impl crate::backend::Renderer for GpuState {
+    fn window(&self) -> &Arc<Window> {
+        GpuState::window(self)
+    }
+    fn window_size(&self) -> (u32, u32) {
+        GpuState::window_size(self)
+    }
+    fn tex_size(&self) -> (u32, u32) {
+        GpuState::tex_size(self)
+    }
+    fn resize(&mut self, width: u32, height: u32) {
+        GpuState::resize(self, width, height)
+    }
+    fn upload(&mut self, width: u32, height: u32, bgra: &[u8]) {
+        GpuState::upload(self, width, height, bgra)
+    }
+    fn render(&mut self) -> crate::backend::RenderOutcome {
+        use crate::backend::RenderOutcome;
+        match GpuState::render(self) {
+            Ok(()) => RenderOutcome::Presented,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => RenderOutcome::Lost,
+            Err(wgpu::SurfaceError::OutOfMemory) => RenderOutcome::OutOfMemory,
+            Err(e) => {
+                log::warn!("render error: {e:?}");
+                RenderOutcome::Error
+            }
+        }
+    }
+}

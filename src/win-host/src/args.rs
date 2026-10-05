@@ -1,5 +1,7 @@
 //! Command-line argument parsing for the Windows host.
 
+use bridge_protocol::Backend;
+
 /// Transport used to reach the compositor. Only TCP exists today; the flag is here so other
 /// transports (e.g. shared-memory signalling) can be added without changing the CLI shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,7 +17,11 @@ pub struct Args {
     pub host: Option<String>,
     /// Selected transport.
     pub connection_type: ConnectionType,
-    /// Whether to print usage and exit (`-h`/`--help`, or an invalid `--connection-type`).
+    /// Render backend to use. Defaults to [`Backend::Webgpu`]. If the compositor's handshake
+    /// advertises a different backend, the host-side value is overridden to match it so a
+    /// single `--backend` on either side is consistent.
+    pub backend: Backend,
+    /// Whether to print usage and exit (`-h`/`--help`, or an invalid flag value).
     pub help: bool,
 }
 
@@ -24,6 +30,7 @@ impl Default for Args {
         Args {
             host: None,
             connection_type: ConnectionType::Tcp,
+            backend: Backend::Webgpu,
             help: false,
         }
     }
@@ -33,6 +40,7 @@ impl Default for Args {
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
     let mut host: Option<String> = None;
     let mut connection_type = ConnectionType::Tcp;
+    let mut backend = Backend::Webgpu;
     let mut help = false;
 
     let mut it = args.into_iter();
@@ -48,6 +56,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
                 // Any other (or missing) value is unsupported for now: show help and exit.
                 _ => help = true,
             },
+            "--backend" => match it.next().as_deref().and_then(Backend::parse) {
+                Some(b) => backend = b,
+                None => help = true,
+            },
             "-h" | "--help" => help = true,
             _ => {}
         }
@@ -56,6 +68,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
     Args {
         host,
         connection_type,
+        backend,
         help,
     }
 }
@@ -71,11 +84,13 @@ pub fn candidate_addrs(host: &Option<String>) -> Vec<String> {
 
 /// Usage string shown for `--help`.
 pub const USAGE: &str =
-    "win-host [--host <ip:port>] [--connection-type tcp]\n\
+    "win-host [--host <ip:port>] [--connection-type tcp] [--backend webgpu|vulkan]\n\
      \n\
      --host             compositor control channel address. If omitted, scan 127.0.0.1\n\
      \u{20}                  starting at port 8335 and connect to the first that answers.\n\
-     --connection-type  transport to use. Only 'tcp' is supported (the default).";
+     --connection-type  transport to use. Only 'tcp' is supported (the default).\n\
+     --backend          host renderer: 'webgpu' (default) or 'vulkan' (ash + gpu-allocator).\n\
+     \u{20}                  The compositor's handshake backend overrides this if they differ.";
 
 #[cfg(test)]
 mod tests {
@@ -86,7 +101,34 @@ mod tests {
         let a = parse_args(Vec::<String>::new());
         assert_eq!(a.host, None);
         assert_eq!(a.connection_type, ConnectionType::Tcp);
+        assert_eq!(a.backend, Backend::Webgpu);
         assert!(!a.help);
+    }
+
+    #[test]
+    fn backend_defaults_to_webgpu() {
+        assert_eq!(parse_args(Vec::<String>::new()).backend, Backend::Webgpu);
+        assert_eq!(Args::default().backend, Backend::Webgpu);
+    }
+
+    #[test]
+    fn parses_backend_vulkan() {
+        let a = parse_args(["--backend".to_string(), "vulkan".to_string()]);
+        assert_eq!(a.backend, Backend::Vulkan);
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn parses_backend_webgpu() {
+        let a = parse_args(["--backend".to_string(), "webgpu".to_string()]);
+        assert_eq!(a.backend, Backend::Webgpu);
+        assert!(!a.help);
+    }
+
+    #[test]
+    fn backend_invalid_requests_help() {
+        let a = parse_args(["--backend".to_string(), "metal".to_string()]);
+        assert!(a.help);
     }
 
     #[test]
