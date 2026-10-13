@@ -20,6 +20,11 @@ to_wsl() { echo "$1" | sed -E 's#^/([a-zA-Z])/#/mnt/\L\1/#'; }
 REPO_WSL="$(to_wsl "$SELFDIR")"
 PORT="${WWC_PORT:-7900}"
 
+cargo build --release --bin win-host
+WINHOST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/target/release"
+export PATH="$WINHOST_DIR:$PATH"
+echo "Added $WINHOST_DIR to PATH for this session."
+
 command -v wsl >/dev/null || { echo "ERROR: wsl not found (run from Git Bash on Windows)."; exit 1; }
 
 DISTRO="${1:-}"; BACKEND="${2:-}"; DESKTOP="${3:-}"

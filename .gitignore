@@ -20,7 +20,7 @@ packaging/msix/bin/
 *.rs.bk
  
 # IDE / Editor
-.vscode/
+.vscode/settings.json
 .idea/
  
 # macOS

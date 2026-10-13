@@ -1,5 +1,7 @@
 # wayland-webgpu-composer
 
+![Desktop preview](screenshot.png)
+
 A **WSL1 Wayland compositor** that lets you run Linux desktop apps *inside Windows* and
 presents them through a **WebGPU** window. The compositor runs as a normal Linux process in
 **WSL1**, software-composites its Wayland clients into a shared framebuffer, and a native

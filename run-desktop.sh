@@ -16,10 +16,11 @@
 # ---------------------------------------------------------------------------
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PORT="${WWC_PORT:-7900}"
 W="${WWC_WIDTH:-1280}"
 H="${WWC_HEIGHT:-800}"
-FB="${WWC_FB:-/mnt/c/projects/tamus/wayland-webgpu-composer/target/desktop.fb}"
+FB="${WWC_FB:-$SCRIPT_DIR/target/desktop.fb}"
 WWC="${WWC_BIN:-/usr/local/bin/wsl-compositor}"
 # Render backend advertised to the Windows host: webgpu (default) or vulkan.
 BACKEND="${WWC_BACKEND:-webgpu}"
@@ -29,11 +30,10 @@ mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 # No GPU on WSL1: software renderers + nested wayland backends.
 export WLR_RENDERER=pixman WLR_BACKENDS=wayland WLR_NO_HARDWARE_CURSORS=1
 export KWIN_COMPOSE=Q
-export XCURSOR_THEME=Adwaita XCURSOR_SIZE=24
+export XCURSOR_THEME=DMZ-White XCURSOR_SIZE=24
 
 # WSL1 lacks memfd_create(); KWin/foot/Qt need it. Build the shim on demand and
 # LD_PRELOAD it so those clients fall back to an unlinked temp file.
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 SHIM=/usr/local/lib/wwc-memfd-shim.so
 ensure_shim() {
 	if [ ! -e "$SHIM" ] && command -v gcc >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/shims/memfd_shim.c" ]; then
@@ -85,13 +85,14 @@ write_configs() {
 
 	cat > "$cfg/sway/config" <<'EOF'
 set $mod Mod4
+xwayland disable
 font pango:DejaVu Sans 10
 default_border normal 2
 default_floating_border normal 2
 titlebar_padding 8 4
 gaps inner 4
 output * bg #203a5c solid_color
-seat * xcursor_theme Adwaita 24
+seat * xcursor_theme DMZ-White 24
 for_window [app_id=".*"] floating enable, border normal
 for_window [class=".*"] floating enable, border normal
 floating_modifier $mod normal
@@ -205,4 +206,5 @@ sleep 1
 
 echo "Launching '$NAME' on WWC (${W}x${H}, port $PORT, backend $BACKEND)."
 echo "On Windows, view it with:  win-host --host 127.0.0.1:$PORT --backend $BACKEND"
+echo exec "$WWC" --shm "$FB" --listen "127.0.0.1:$PORT" --width "$W" --height "$H" --backend "$BACKEND" -c "$CMD"
 exec "$WWC" --shm "$FB" --listen "127.0.0.1:$PORT" --width "$W" --height "$H" --backend "$BACKEND" -c "$CMD"

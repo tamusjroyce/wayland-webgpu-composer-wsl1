@@ -17,6 +17,21 @@ set "WSL_UTF8=1"
 set "SELFDIR=%~dp0"
 if not defined WWC_PORT set "WWC_PORT=7900"
 
+cargo build --release --bin win-host
+set "WINHOST_DIR=%~dp0target\release"
+set "PATH=%WINHOST_DIR%;%PATH%"
+echo Added %WINHOST_DIR% to PATH for this session.
+rem Run your configure command afterwards
+set "TARGET_DIR=%USERPROFILE%\target\release"
+for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v "PATH" 2^>nul') do set "CUR_PATH=%%b"
+echo %CUR_PATH% | find /i "%TARGET_DIR%" >nul
+if errorlevel 1 (
+    reg add "HKCU\Environment" /v "PATH" /t REG_EXPAND_SZ /d "%CUR_PATH%;%TARGET_DIR%" /f
+    echo Successfully added %TARGET_DIR% to permanent User PATH.
+) else (
+    echo Directory is already present in the permanent User PATH.
+)
+
 where wsl >nul 2>&1 || (echo ERROR: WSL is not installed.& exit /b 1)
 
 set "DISTRO=%~1"

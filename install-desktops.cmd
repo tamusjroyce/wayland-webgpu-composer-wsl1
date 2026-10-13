@@ -10,10 +10,14 @@ REM Each compositor runs as a nested Wayland client of wayland-webgpu-composer.
 REM ---------------------------------------------------------------------------
 setlocal EnableExtensions
 
-set "DISTRO=Ubuntu-Latest-WSL1"
+set "DISTRO="
 set "SELFDIR=%~dp0"
 
 where wsl >nul 2>&1 || (echo ERROR: WSL is not installed.& goto :fail)
+echo Available WSL distributions:
+wsl -l -q
+set /p "DISTRO=Enter the distro name to install into: "
+if not defined DISTRO (echo ERROR: no distro selected.& goto :fail)
 wsl -l -q | findstr /i /c:"%DISTRO%" >nul 2>&1 || (echo ERROR: distro %DISTRO% not found. Run install.cmd first.& goto :fail)
 
 REM Translate this folder's install-desktops.sh to a path WSL can read (/mnt/...).
